@@ -111,6 +111,10 @@ input:focus, select:focus { outline: 3px solid #000; outline-offset: 0; }
 #actionbar:empty { display: none; }
 #actionbar .btn { flex: 1; }
 #actionbar .btn.small { flex: 0 0 auto; }
+/* Deux actions : la principale en bas (pouce), la secondaire au-dessus */
+#actionbar.pile { flex-direction: column-reverse; }
+#actionbar.pile .btn { flex: none; width: 100%; }
+body:has(#actionbar.pile) { padding-bottom: calc(2 * var(--tap) + 44px + env(safe-area-inset-bottom)); }
 
 /* ---------- Liste des sessions ---------- */
 .filters { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px; }
@@ -143,6 +147,27 @@ input:focus, select:focus { outline: 3px solid #000; outline-offset: 0; }
 }
 .th .n { position: absolute; left: 4px; bottom: 4px; background: rgba(0,0,0,.65); color: #fff; font-size: 12px; padding: 1px 5px; border-radius: 3px; }
 .hidden-input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+button.th { border: 0; padding: 0; cursor: pointer; }
+
+/* ---------- Validation ---------- */
+textarea {
+  display: block; width: 100%; margin-top: 4px; padding: 10px 12px; font: inherit; font-size: 17px;
+  background: var(--surface-2); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius);
+}
+.champ { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 10px; margin-bottom: 8px; }
+.champ.alarm { border: 3px solid var(--alarm); }
+.champ.warn { border: 3px solid var(--warn); }
+.champ-tete { display: flex; justify-content: space-between; gap: 8px; font-weight: 600; font-size: 15px; flex-wrap: wrap; }
+.champ-saisie { display: flex; gap: 6px; margin-top: 4px; }
+.champ-saisie input { flex: 1; min-width: 0; }
+.champ-saisie select { flex: 0 0 120px; width: 120px; font-size: 14px; padding: 0 6px; }
+#viewer {
+  position: fixed; inset: 0; z-index: 50; background: #000;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px;
+  padding: env(safe-area-inset-top) 0 calc(12px + env(safe-area-inset-bottom));
+}
+#viewer img { max-width: 100%; max-height: calc(100% - 80px); object-fit: contain; }
+#viewer .btn { width: calc(100% - 24px); }
 
 /* ---------- Toast et attente ---------- */
 #toast {
@@ -186,9 +211,10 @@ input:focus, select:focus { outline: 3px solid #000; outline-offset: 0; }
 /* ---------------------------------------------------------------------
    1. CONSTANTES
    --------------------------------------------------------------------- */
-const APP_VERSION = '0.1.0';
+const APP_VERSION = '0.2.0';
 const REGLAGES_KEY = 'pm_reglages';      // réglages (petits) → localStorage
 const PERSIST_KEY  = 'pm_persist_demande';
+const API_URL = 'https://api.anthropic.com/v1/messages';
 const DB_NAME = 'plaques-moteurs';
 const DB_VERSION = 1;
 
@@ -212,6 +238,22 @@ const STATUTS = {
   validee:   'Validée',
   exportee:  'Exportée'
 };
+
+// Champs de la plaque : clé JSON → libellé (même ordre que les colonnes Excel)
+const CHAMPS = [
+  ['fabricant', 'Fabricant'], ['modele', 'Modèle / Cat. No'], ['numero_serie', 'No de série'],
+  ['puissance_hp', 'Puissance (HP)'], ['puissance_kw', 'Puissance (kW)'], ['tension_v', 'Tension (V)'],
+  ['courant_a', 'Courant (A)'], ['vitesse_rpm', 'Vitesse (RPM)'], ['frequence_hz', 'Fréquence (Hz)'],
+  ['phases', 'Phases'], ['service_factor', 'Service Factor'], ['rendement_pct', 'Rendement (%)'],
+  ['facteur_puissance', 'Facteur de puissance'], ['classe_isolation', "Classe d'isolation"],
+  ['frame', 'Frame'], ['enclosure_ip', 'Enclosure / IP'], ['nema_design', 'NEMA Design'],
+  ['code_kva', 'Code kVA'], ['temp_ambiante_c', 'Temp. ambiante (°C)'], ['roulements', 'Roulements'],
+  ['annee', 'Année']
+];
+// Statuts d'un champ. Les trois codes « sans valeur » ne portent jamais de valeur.
+const STATUTS_CHAMP = ['LU', 'ILLISIBLE', 'ABSENT', 'NON TROUVÉ', 'CALCULÉ'];
+const CODES_SANS_VALEUR = ['ILLISIBLE', 'ABSENT', 'NON TROUVÉ'];
+const CONFIANCES = ['elevee', 'moyenne', 'faible'];
 
 const PHOTO_MAX = 1568;       // côté maximal de la photo conservée (px)
 const PHOTO_QUALITE = 0.85;
@@ -511,6 +553,7 @@ async function router() {
   urlsMiniatures.forEach(u => URL.revokeObjectURL(u));
   urlsMiniatures = [];
   actionbar().innerHTML = '';
+  actionbar().className = '';
   document.getElementById('banners').innerHTML = '';
   window.scrollTo(0, 0);
 
@@ -523,6 +566,7 @@ async function router() {
   if (h === '#/reglages') return ecranReglages();
   if (h === '#/nouvelle') return ecranNouvelle();
   if ((m = h.match(/^#\/s\/([^/]+)\/capture$/))) return ecranCapture(decodeURIComponent(m[1]));
+  if ((m = h.match(/^#\/s\/([^/]+)\/validation$/))) return ecranValidation(decodeURIComponent(m[1]));
   return ecranSessions();
 }
 window.addEventListener('hashchange', router);
@@ -622,15 +666,23 @@ function ecranReglages() {
     if (!/^[A-Z]{2,3}$/.test(nv.initiales)) { err.textContent = 'Entre 2 ou 3 lettres pour les initiales.'; err.hidden = false; return; }
     ecrireReglages(nv);
     toast('Réglages enregistrés');
+    // Nouvelle clé : les sessions bloquées par « clé refusée » repartent
+    if (document.getElementById('r-cle').value.trim()) relancerErreursCle();
     aller('#/sessions');
   };
+}
+
+async function relancerErreursCle() {
+  const bloquees = (await DB.toutesSessions()).filter(s => s.erreurType === 'cle');
+  for (const s of bloquees) { s.derniereErreur = null; s.erreurType = null; await DB.putSession(s); }
+  traiterFile();
 }
 
 // Appel minimal (1 jeton) pour vérifier la clé et le modèle.
 async function testerCle(cle, modele) {
   if (!navigator.onLine) return { ok: false, message: 'Hors ligne. Teste la clé une fois en ligne.' };
   try {
-    const rep = await fetch('https://api.anthropic.com/v1/messages', {
+    const rep = await fetch(API_URL, {
       method: 'POST',
       headers: {
         'x-api-key': cle,
@@ -650,6 +702,351 @@ async function testerCle(cle, modele) {
     return { ok: false, message: 'Pas de réseau. Réessaie une fois en ligne.' };
   }
 }
+
+/* ---------------------------------------------------------------------
+   9 bis. ANALYSE IA
+   Un seul appel par session, avec toutes ses photos.
+   Les photos ne sont jamais modifiées ni supprimées par l'analyse :
+   en cas d'erreur, la session reste « En attente d'analyse ».
+   --------------------------------------------------------------------- */
+const PROMPT_SYSTEME = `Tu analyses des photos de moteurs électriques industriels prises sur le terrain. Chaque photo est précédée de son numéro et de son type : Plaque, Nom/étiquette, Installation ou inconnu.
+
+Règles :
+- Les données de la plaque viennent UNIQUEMENT des photos de type Plaque. Si plusieurs photos montrent la même plaque (angles, reflets, plaque partielle), combine les lectures.
+- Le tag et le nom de l'équipement viennent des photos Nom/étiquette.
+- Les photos Installation servent à décrire brièvement le contexte : charge entraînée, accouplement, montage.
+- Ne jamais inventer, ne jamais deviner à partir du modèle ou du fabricant. Statut de chaque champ :
+  LU : lu directement sur une photo.
+  ILLISIBLE : le champ est présent mais tu ne peux pas le lire avec certitude. valeur = "".
+  ABSENT : la plaque est visible en entier et ce champ n'y figure pas. valeur = "".
+  NON TROUVÉ : aucune photo ne permet de le savoir (ex. pas de photo Nom/étiquette, plaque coupée). valeur = "".
+  CALCULÉ : uniquement puissance_kw à partir des HP (1 HP = 0,746 kW, arrondi à 2 décimales) ou l'inverse ; précise-le dans remarques.
+- Recopie les valeurs telles qu'écrites, sans unité, en conservant les valeurs multiples (ex. « 230/460 », « 28/14 »).
+- confiance : elevee (lecture nette), moyenne (lecture probable, un caractère douteux), faible (lecture incertaine). Si tu hésites entre deux lectures, mets ILLISIBLE et indique les lectures possibles dans remarques.
+- Si une photo est de type « inconnu », détermine d'abord son type (Plaque, Nom/étiquette, Installation ou Autre) et indique-le dans classement_photos. Ignore les photos Autre pour l'extraction. Sinon, laisse classement_photos vide.
+- Si les photos Plaque semblent montrer deux moteurs différents (numéros de série ou modèles différents), mets alerte_multi_moteurs à true et explique pourquoi dans remarques.
+- Réponds uniquement en JSON valide, sans texte autour, selon le schéma fourni. Toutes les clés sont obligatoires.`;
+
+// Schéma JSON imposé à la réponse (structured outputs)
+const SCHEMA_CHAMP = {
+  type: 'object',
+  properties: {
+    valeur: { type: 'string' },
+    statut: { type: 'string', enum: STATUTS_CHAMP },
+    confiance: { type: 'string', enum: CONFIANCES }
+  },
+  required: ['valeur', 'statut', 'confiance'],
+  additionalProperties: false
+};
+const SCHEMA_REPONSE = {
+  type: 'object',
+  properties: {
+    tag_equipement: SCHEMA_CHAMP,
+    nom_equipement: SCHEMA_CHAMP,
+    champs: {
+      type: 'object',
+      properties: Object.fromEntries(CHAMPS.map(([k]) => [k, SCHEMA_CHAMP])),
+      required: CHAMPS.map(([k]) => k),
+      additionalProperties: false
+    },
+    description_installation: { type: 'string' },
+    alerte_multi_moteurs: { type: 'boolean' },
+    remarques: { type: 'string' },
+    classement_photos: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          photo: { type: 'integer' },
+          type: { type: 'string', enum: ['Plaque', 'Nom/étiquette', 'Installation', 'Autre'] }
+        },
+        required: ['photo', 'type'],
+        additionalProperties: false
+      }
+    }
+  },
+  required: ['tag_equipement', 'nom_equipement', 'champs', 'description_installation',
+             'alerte_multi_moteurs', 'remarques', 'classement_photos'],
+  additionalProperties: false
+};
+
+// Erreur typée : "reseau" (réessayer plus tard, automatiquement),
+// "cle" (clé refusée), "ia" (réponse inutilisable), "service" (API en panne)
+class ErreurAnalyse extends Error {
+  constructor(type, message) { super(message); this.type = type; }
+}
+
+const attendre = ms => new Promise(r => setTimeout(r, ms));
+
+function blobVersBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(String(fr.result).split(',')[1]);
+    fr.onerror = () => reject(fr.error);
+    fr.readAsDataURL(blob);
+  });
+}
+
+// Ordre d'envoi : Plaque, Nom/étiquette, Installation, puis inconnu (phase 5)
+const ORDRE_TYPES = ['plaque', 'nom', 'installation', 'inconnu'];
+const LIBELLE_TYPE_IA = { plaque: 'Plaque', nom: 'Nom/étiquette', installation: 'Installation', inconnu: 'inconnu' };
+
+function trierPhotosPourIA(photos) {
+  return photos.slice().sort((a, b) =>
+    ORDRE_TYPES.indexOf(a.type) - ORDRE_TYPES.indexOf(b.type) || a.n - b.n);
+}
+
+// Construit le contenu du message : « Photo n — type : X » puis l'image
+async function contenuMessage(photos) {
+  const contenu = [];
+  for (let i = 0; i < photos.length; i++) {
+    contenu.push({ type: 'text', text: `Photo ${i + 1} — type : ${LIBELLE_TYPE_IA[photos[i].type] || 'inconnu'}` });
+    contenu.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: await blobVersBase64(photos[i].jpeg) } });
+  }
+  contenu.push({ type: 'text', text: 'Analyse ces photos selon les règles et réponds en JSON.' });
+  return contenu;
+}
+
+// Un appel HTTP, avec 3 essais et délai croissant pour 429 / 529 / 5xx.
+// "compatible" = sans les options avancées (repli si l'API refuse la requête).
+async function appelAPI(cle, modele, contenu, compatible) {
+  const corps = {
+    model: modele,
+    max_tokens: 16000,
+    system: PROMPT_SYSTEME,
+    messages: [{ role: 'user', content: contenu }]
+  };
+  const entetes = {
+    'x-api-key': cle,
+    'anthropic-version': '2023-06-01',
+    'anthropic-dangerous-direct-browser-access': 'true',
+    'content-type': 'application/json'
+  };
+  if (!compatible) {
+    // Réponse garantie conforme au schéma
+    corps.output_config = { format: { type: 'json_schema', schema: SCHEMA_REPONSE } };
+    // Si le modèle refuse la requête, l'API bascule seule sur un autre modèle
+    corps.fallbacks = 'default';
+    entetes['anthropic-beta'] = 'server-side-fallback-2026-07-01';
+  }
+
+  const DELAIS = [2000, 6000];        // 3 essais au total
+  for (let essai = 0; ; essai++) {
+    if (!navigator.onLine) throw new ErreurAnalyse('reseau', 'Hors ligne');
+    let rep;
+    const ctrl = new AbortController();
+    const minuteur = setTimeout(() => ctrl.abort(), 180000);   // 3 min max
+    try {
+      rep = await fetch(API_URL, { method: 'POST', headers: entetes, body: JSON.stringify(corps), signal: ctrl.signal });
+    } catch {
+      // Coupure réseau, app passée en arrière-plan, délai dépassé…
+      throw new ErreurAnalyse('reseau', 'Réseau interrompu');
+    } finally { clearTimeout(minuteur); }
+
+    if (rep.ok) return rep.json();
+    if (rep.status === 401) throw new ErreurAnalyse('cle', 'Clé refusée. Vérifie la clé dans Réglages ou contacte Paul.');
+    const transitoire = rep.status === 429 || rep.status >= 500;
+    if (transitoire && essai < DELAIS.length) { await attendre(DELAIS[essai]); continue; }
+    let detail = '';
+    try { detail = (await rep.json())?.error?.message || ''; } catch { /* corps illisible */ }
+    if (transitoire) throw new ErreurAnalyse('service', `Service indisponible (code ${rep.status}). Relance plus tard.`);
+    const err = new ErreurAnalyse('requete', `Requête refusée (code ${rep.status}). ${detail}`.trim());
+    err.status = rep.status;
+    throw err;
+  }
+}
+
+// Extrait le JSON de la réponse, même entouré de ``` ou de texte
+function extraireJSON(reponse) {
+  if (reponse.stop_reason === 'refusal') return null;
+  const texte = (reponse.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n');
+  let t = texte.replace(/```(?:json)?/gi, '').trim();
+  const debut = t.indexOf('{'), fin = t.lastIndexOf('}');
+  if (debut < 0 || fin < debut) return null;
+  try {
+    const obj = JSON.parse(t.slice(debut, fin + 1));
+    return obj && typeof obj === 'object' && obj.champs && typeof obj.champs === 'object' ? obj : null;
+  } catch { return null; }
+}
+
+// Analyse complète d'une session. Retourne { resultat, usage, modele }.
+// "journal" reçoit chaque appel (réussi ou non) pour la feuille Journal.
+async function analyserPhotos(photos, reglages, journal) {
+  if (!reglages.cle) throw new ErreurAnalyse('cle', 'Aucune clé API. Entre la clé dans Réglages.');
+  const tri = trierPhotosPourIA(photos);
+  const contenu = await contenuMessage(tri);
+
+  let compatible = false;
+  for (let tentative = 0; tentative < 2; tentative++) {     // JSON invalide → un nouvel essai
+    let reponse;
+    try {
+      reponse = await appelAPI(reglages.cle, reglages.modele, contenu, compatible);
+    } catch (e) {
+      // Requête refusée (400) avec les options avancées → on réessaie en mode compatible
+      if (e.type === 'requete' && e.status === 400 && !compatible) { compatible = true; tentative--; continue; }
+      throw e;
+    }
+    const resultat = extraireJSON(reponse);
+    journal.push({
+      date: new Date().toISOString(),
+      modele: reponse.model || reglages.modele,
+      input_tokens: reponse.usage?.input_tokens || 0,
+      output_tokens: reponse.usage?.output_tokens || 0,
+      nbPhotos: tri.length,
+      ok: !!resultat,
+      erreur: resultat ? null : (reponse.stop_reason === 'refusal' ? 'refus' : 'json invalide')
+    });
+    if (resultat) {
+      // Le numéro de photo de classement_photos → id de la photo
+      resultat.classement_photos = (resultat.classement_photos || [])
+        .map(c => ({ ...c, photoId: tri[c.photo - 1]?.id })).filter(c => c.photoId);
+      return resultat;
+    }
+    if (reponse.stop_reason === 'refusal') {
+      throw new ErreurAnalyse('ia', "Analyse refusée par l'IA. Reprends les photos ou contacte Paul.");
+    }
+  }
+  throw new ErreurAnalyse('ia', "Réponse de l'IA illisible. Touche « Relancer l'analyse ».");
+}
+
+// Normalise un champ renvoyé par l'IA : jamais de valeur avec un code « sans valeur »
+function champDepuisIA(c) {
+  let statut = STATUTS_CHAMP.includes(c?.statut) ? c.statut : 'NON TROUVÉ';
+  let valeur = typeof c?.valeur === 'string' ? c.valeur.trim() : '';
+  if (CODES_SANS_VALEUR.includes(statut)) valeur = '';
+  if (!valeur && (statut === 'LU' || statut === 'CALCULÉ')) statut = 'NON TROUVÉ';
+  const confiance = CONFIANCES.includes(c?.confiance) ? c.confiance : 'faible';
+  return { valeur, statut, confiance, valeurIA: valeur, statutIA: statut, modifie: false };
+}
+
+// Fusionne le résultat IA avec les valeurs existantes :
+// un champ déjà modifié par l'opérateur n'est jamais écrasé.
+function valeursDepuisIA(r, anciennes) {
+  const garder = (nouveau, ancien) => ancien?.modifie ? ancien : nouveau;
+  const v = {
+    tag_equipement: garder(champDepuisIA(r.tag_equipement), anciennes?.tag_equipement),
+    nom_equipement: garder(champDepuisIA(r.nom_equipement), anciennes?.nom_equipement),
+    champs: {},
+    description_installation: anciennes?.descriptionModifiee ? anciennes.description_installation : (r.description_installation || ''),
+    descriptionModifiee: !!anciennes?.descriptionModifiee,
+    remarques: r.remarques || ''
+  };
+  CHAMPS.forEach(([k]) => v.champs[k] = garder(champDepuisIA(r.champs?.[k]), anciennes?.champs?.[k]));
+  return v;
+}
+
+// Tous les champs « à statut » d'une session : [clé, libellé, objet champ]
+function champsListe(v) {
+  return [['tag_equipement', 'Tag équipement', v.tag_equipement],
+          ['nom_equipement', 'Nom équipement', v.nom_equipement]]
+    .concat(CHAMPS.map(([k, l]) => [k, l, v.champs[k]]));
+}
+
+// Confiance globale : faible si un champ reste ILLISIBLE ou peu sûr.
+// Un champ corrigé par l'opérateur compte comme sûr (sauf s'il est ILLISIBLE).
+function confianceGlobale(v) {
+  const tous = champsListe(v).map(x => x[2]).filter(Boolean);
+  const nonCorriges = tous.filter(c => !c.modifie && !CODES_SANS_VALEUR.includes(c.statut));
+  if (tous.some(c => c.statut === 'ILLISIBLE') || nonCorriges.some(c => c.confiance === 'faible')) return 'faible';
+  if (nonCorriges.some(c => c.confiance === 'moyenne')) return 'moyenne';
+  return 'elevee';
+}
+
+/* ---------------------------------------------------------------------
+   9 ter. FILE D'ATTENTE
+   iOS n'exécute rien en arrière-plan : la file est traitée quand l'app
+   est ouverte (démarrage, retour au premier plan, retour du réseau).
+   --------------------------------------------------------------------- */
+const enCours = new Set();      // ids de sessions en cours d'analyse
+let fileActive = false;
+
+async function traiterFile() {
+  if (fileActive || !navigator.onLine) return;
+  fileActive = true;
+  try {
+    const attente = (await DB.toutesSessions())
+      .filter(s => s.statut === 'attente' && !s.derniereErreur)
+      .sort((a, b) => (a.modifieLe || '').localeCompare(b.modifieLe || ''));
+    for (const s of attente) {
+      const arret = await analyserSession(s.id);
+      if (arret) break;             // réseau coupé ou clé refusée : inutile de continuer
+    }
+  } finally {
+    fileActive = false;
+  }
+}
+
+// Analyse une session. Retourne true si la file doit s'arrêter.
+async function analyserSession(id) {
+  enCours.add(id);
+  rafraichirSiVisible(id);
+  const journal = [];
+  let arret = false;
+  try {
+    const photos = await DB.photosSession(id);
+    const resultat = await analyserPhotos(photos, lireReglages(), journal);
+    const s = await DB.getSession(id);
+    if (!s || s.statut !== 'attente') return false;     // supprimée ou modifiée entre-temps
+    s.resultatIA = resultat;
+    s.valeurs = valeursDepuisIA(resultat, s.valeurs);
+    s.alerteMultiMoteurs = !!resultat.alerte_multi_moteurs;
+    s.confianceGlobale = confianceGlobale(s.valeurs);
+    s.analyses = (s.analyses || []).concat(journal);
+    s.derniereErreur = null;
+    s.erreurType = null;
+    s.statut = 'a_valider';
+    // Type attribué par l'IA aux photos « inconnu » (phase 5)
+    if (resultat.classement_photos.length) {
+      const parId = Object.fromEntries(photos.map(p => [p.id, p]));
+      const maj = resultat.classement_photos.map(c => Object.assign(parId[c.photoId], { typeIA: c.type }));
+      await DB.ajouterPhotos(s, maj);
+    } else {
+      await DB.putSession(s);
+    }
+    toast(`Analyse terminée : ${s.tagSaisi || s.valeurs.tag_equipement.valeur || s.id} à valider`);
+  } catch (e) {
+    const s = await DB.getSession(id);
+    if (s) {
+      s.analyses = (s.analyses || []).concat(journal);
+      if (e.type === 'reseau') {
+        arret = true;                 // reste en attente, repartira tout seul
+      } else {
+        s.derniereErreur = e.message || 'Erreur inconnue';
+        s.erreurType = e.type || 'inconnu';
+        arret = e.type === 'cle';
+      }
+      await DB.putSession(s);
+    }
+  } finally {
+    enCours.delete(id);
+    rafraichirSiVisible(id);
+  }
+  return arret;
+}
+
+// Relance manuelle (après correction de la clé, erreur IA…)
+async function relancerAnalyse(id) {
+  const s = await DB.getSession(id);
+  s.derniereErreur = null; s.erreurType = null; s.statut = 'attente';
+  await DB.putSession(s);
+  traiterFile();
+}
+
+// Si l'écran affiché concerne cette session (ou la liste), on le redessine
+function rafraichirSiVisible(id) {
+  const h = location.hash || '#/sessions';
+  if (h === '#/sessions') return ecranSessions();
+  if (h.includes(encodeURIComponent(id))) {
+    // Analyse finie pendant que l'opérateur attend : on passe à la validation
+    DB.getSession(id).then(s => {
+      if (s?.statut === 'a_valider' && h.endsWith('/capture')) aller('#/s/' + encodeURIComponent(id) + '/validation');
+      else router();
+    });
+  }
+}
+
+window.addEventListener('online', () => traiterFile());
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') traiterFile(); });
 
 /* ---------------------------------------------------------------------
    10. ÉCRAN LISTE DES SESSIONS
@@ -700,20 +1097,25 @@ async function ecranSessions() {
 function carteSession(s, nb) {
   const nonExporte = s.statut === 'validee';
   const titre = s.tagSaisi || s.valeurs?.tag_equipement?.valeur || '(sans tag)';
+  const statut = enCours.has(s.id) ? 'Analyse en cours…' : (STATUTS[s.statut] || s.statut);
   return `
     <button class="card sess" data-id="${escHtml(s.id)}">
-      <div class="l1"><span>${escHtml(titre)}</span><span class="status">${escHtml(STATUTS[s.statut] || s.statut)}</span></div>
+      <div class="l1"><span>${escHtml(titre)}</span><span class="status">${escHtml(statut)}</span></div>
       <div class="l2 muted">${escHtml([s.site, s.zone].filter(Boolean).join(' · ') || 'Site non renseigné')}</div>
       <div class="l2 muted num">${escHtml(fmtDateHeure(s.datePriseVue || s.creeLe))} · ${nb} photo${nb > 1 ? 's' : ''} · ${escHtml(s.operateur?.initiales || '')}</div>
       <div class="l2 muted num" style="font-size:13px">${escHtml(s.id)}</div>
       ${nonExporte ? '<div class="l2"><span class="badge">Non exporté</span></div>' : ''}
+      ${s.statut === 'a_valider' && s.confianceGlobale === 'faible' ? '<div class="l2"><span class="badge warn">Confiance faible</span></div>' : ''}
+      ${s.statut === 'a_valider' && s.alerteMultiMoteurs ? '<div class="l2"><span class="badge warn">Deux moteurs ?</span></div>' : ''}
       ${s.derniereErreur ? `<div class="l2"><span class="badge alarm">${escHtml(s.derniereErreur)}</span></div>` : ''}
     </button>`;
 }
 
-function ouvrirSession(id) {
-  // Phase 1 : seule la capture existe. Les autres écrans viendront en phases 2 et 3.
-  aller('#/s/' + encodeURIComponent(id) + '/capture');
+// Capture / attente → écran capture ; analysée → écran validation
+async function ouvrirSession(id) {
+  const s = await DB.getSession(id);
+  const ecran = ['capture', 'attente'].includes(s?.statut) ? 'capture' : 'validation';
+  aller('#/s/' + encodeURIComponent(id) + '/' + ecran);
 }
 
 // Bandeau : rappel d'export (sessions validées depuis plus de 3 jours)
@@ -722,6 +1124,13 @@ function afficherRappels(sessions) {
   const limite = Date.now() - RAPPEL_EXPORT_JOURS * 86400000;
   const enRetard = sessions.filter(s => s.statut === 'validee' && new Date(s.valideeLe || s.modifieLe).getTime() < limite);
   let html = '';
+  if (sessions.some(s => s.erreurType === 'cle')) {
+    html += `<div class="banner alarm"><strong>Clé refusée.</strong> Vérifie la clé dans Réglages ou contacte Paul. Les photos sont conservées.</div>`;
+  }
+  const enAttente = sessions.filter(s => s.statut === 'attente' && !s.derniereErreur).length;
+  if (enAttente && !navigator.onLine) {
+    html += `<div class="banner warn">${enAttente} session${enAttente > 1 ? 's' : ''} en attente d'analyse. L'envoi partira au retour du réseau, app ouverte.</div>`;
+  }
   if (enRetard.length) {
     html += `<div class="banner warn"><strong>${enRetard.length} session${enRetard.length > 1 ? 's validées' : ' validée'} non exportée${enRetard.length > 1 ? 's' : ''} depuis plus de ${RAPPEL_EXPORT_JOURS} jours.</strong><br>Exporte-les : iOS peut effacer les données de l'app.</div>`;
   }
@@ -832,7 +1241,7 @@ async function ecranCapture(id) {
   view().innerHTML = `
     <div class="muted" style="margin-bottom:10px">${escHtml(infos || 'Site non renseigné')}<br><span class="num">${escHtml(s.id)}</span>
       ${s.datePriseVue ? `<br>Prise de vue : <span class="num">${escHtml(fmtDateHeure(s.datePriseVue))}</span>` : ''}</div>
-    ${!modifiable ? `<div class="card">Statut : <strong>${escHtml(STATUTS[s.statut])}</strong>. Les photos ne sont plus modifiables.</div>` : ''}
+    ${!modifiable ? carteEtatAnalyse(s) : ''}
     ${bloc('nom')}${bloc('plaque')}${bloc('installation')}
     <button class="btn danger block" id="c-del" style="margin-top:20px">Supprimer la session</button>`;
 
@@ -840,6 +1249,7 @@ async function ecranCapture(id) {
     const files = Array.from(inp.files || []);
     inp.value = '';                      // permet de reprendre la même photo
     if (files.length) await ajouterFichiers(s.id, inp.dataset.type, inp.dataset.origine, files);
+    ecranCapture(s.id);
   });
   view().querySelectorAll('.th .del').forEach(b => b.onclick = async () => {
     if (!confirm('Supprimer cette photo ?')) return;
@@ -861,12 +1271,49 @@ async function ecranCapture(id) {
     actionbar().innerHTML = `<button class="btn primary" id="c-fin" ${ok ? '' : 'disabled'}>Terminer et analyser</button>`;
     document.getElementById('c-fin').onclick = async () => {
       const cur = await DB.getSession(s.id);
-      cur.statut = 'attente';           // Phase 2 : l'analyse IA partira d'ici
+      cur.statut = 'attente';
+      cur.derniereErreur = null; cur.erreurType = null;
       await DB.putSession(cur);
-      toast("Session en attente d'analyse");
-      aller('#/sessions');
+      if (!navigator.onLine) {
+        toast("Hors ligne : l'analyse partira au retour du réseau.");
+        return aller('#/sessions');
+      }
+      // On reste sur l'écran : il passe seul à la validation à la fin de l'analyse
+      ecranCapture(s.id);
+      traiterFile();
     };
+  } else if (s.statut === 'attente') {
+    const boutons = [];
+    if (s.derniereErreur) boutons.push('<button class="btn primary" id="c-relance">Relancer l\'analyse</button>');
+    if (!enCours.has(s.id)) boutons.push(`<button class="btn ${s.derniereErreur ? 'small' : ''}" id="c-modif">Modifier les photos</button>`);
+    actionbar().innerHTML = boutons.join('');
+    document.getElementById('c-relance')?.addEventListener('click', () => {
+      if (!navigator.onLine) return toast('Hors ligne. Relance une fois en ligne.', true);
+      relancerAnalyse(s.id);
+    });
+    document.getElementById('c-modif')?.addEventListener('click', async () => {
+      const cur = await DB.getSession(s.id);
+      cur.statut = 'capture';
+      await DB.putSession(cur);
+      ecranCapture(s.id);
+    });
   }
+}
+
+// Carte d'état affichée au-dessus des photos quand la capture est close
+function carteEtatAnalyse(s) {
+  if (enCours.has(s.id)) {
+    return `<div class="card"><strong>Analyse en cours…</strong><br><span class="muted">Garde l'app ouverte. Cela prend en général moins d'une minute.</span></div>`;
+  }
+  if (s.statut === 'attente' && s.derniereErreur) {
+    return `<div class="banner alarm" style="margin:0 0 12px"><strong>${escHtml(s.derniereErreur)}</strong><br>Les photos sont conservées.</div>`;
+  }
+  if (s.statut === 'attente') {
+    return `<div class="card"><strong>En attente d'analyse.</strong><br><span class="muted">${navigator.onLine
+      ? "L'analyse va partir."
+      : "Hors ligne : l'analyse partira au retour du réseau, app ouverte."}</span></div>`;
+  }
+  return `<div class="card">Statut : <strong>${escHtml(STATUTS[s.statut])}</strong>. Les photos ne sont plus modifiables.</div>`;
 }
 
 // Date de la session = date de prise de vue la plus ancienne
@@ -876,11 +1323,12 @@ function datePremiere(photos) {
 }
 
 // Traite puis enregistre des fichiers. Une photo en erreur n'empêche pas les autres.
+// Retourne le nombre de photos ajoutées ; l'appelant redessine son écran.
 async function ajouterFichiers(sessionId, type, origine, files) {
   const existantes = await DB.photosSession(sessionId);
   if (existantes.length + files.length > MAX_PHOTOS_SESSION) {
     toast(`Maximum ${MAX_PHOTOS_SESSION} photos par session. Retire des photos ou ouvre une nouvelle session.`, true);
-    return;
+    return 0;
   }
   const debutLot = Date.now();
   const prets = [];
@@ -913,12 +1361,183 @@ async function ajouterFichiers(sessionId, type, origine, files) {
   } catch (e) {
     libre();
     toast("Enregistrement impossible : espace de stockage plein ? Exporte puis libère de l'espace.", true);
-    return;
+    return 0;
   }
   libre();
   if (echecs) toast(`${echecs} photo${echecs > 1 ? 's' : ''} illisible${echecs > 1 ? 's' : ''}. Reprends-la${echecs > 1 ? 's' : ''}.`, true);
   else if (ajouts.some(p => p.sourceDate !== 'exif') && origine === 'galerie') toast('Date de prise de vue absente : date du fichier utilisée.');
-  ecranCapture(sessionId);
+  return ajouts.length;
+}
+
+/* ---------------------------------------------------------------------
+   12 bis. ÉCRAN VALIDATION
+   Champs neutres par défaut. Rouge = ILLISIBLE, ambre = confiance faible.
+   Tout champ changé par l'opérateur est marqué « modifié ».
+   --------------------------------------------------------------------- */
+async function ecranValidation(id) {
+  const s = await DB.getSession(id);
+  if (!s || !s.valeurs) { toast('Session introuvable ou pas encore analysée.', true); return aller('#/sessions'); }
+  entete(s.tagSaisi || s.valeurs.tag_equipement.valeur || 'Validation', '#/sessions');
+
+  // Copie de travail : rien n'est enregistré avant « Valider »
+  const v = JSON.parse(JSON.stringify(s.valeurs));
+  const photos = trierPhotosPourIA(await DB.photosSession(id));
+  const terrain = s.source !== 'Importée';
+
+  const vignettes = photos.map(p => {
+    const url = URL.createObjectURL(p.miniature);
+    urlsMiniatures.push(url);
+    const t = p.type === 'inconnu' ? (p.typeIA || 'inconnu') : TYPES[p.type];
+    return `<button class="th" data-photo="${escHtml(p.id)}" aria-label="Voir ${escHtml(t)} ${p.n}"><img src="${url}" alt=""><span class="n">${escHtml(t)}</span></button>`;
+  }).join('');
+
+  const tagLu = v.tag_equipement.valeur;
+  const ecartTag = s.tagSaisi && tagLu && s.tagSaisi.replace(/\s/g, '').toUpperCase() !== tagLu.replace(/\s/g, '').toUpperCase();
+
+  view().innerHTML = `
+    <div class="muted" style="margin-bottom:10px">${escHtml([s.site, s.zone].filter(Boolean).join(' · ') || 'Site non renseigné')}<br>
+      <span class="num">${escHtml(s.id)}</span> · ${escHtml(STATUTS[s.statut])}</div>
+    ${!terrain ? '<div class="banner info" style="margin:0 0 12px">Photos importées : relevé non validé devant le moteur. Aucune reprise de photo possible.</div>' : ''}
+    ${s.alerteMultiMoteurs ? `<div class="banner warn" style="margin:0 0 12px"><strong>Deux moteurs différents ?</strong><br>${escHtml(v.remarques || 'Les photos de plaque semblent montrer deux moteurs.')}</div>` : ''}
+    ${ecartTag ? `<div class="banner warn" style="margin:0 0 12px"><strong>Tag différent.</strong> Saisi : ${escHtml(s.tagSaisi)} · Lu : ${escHtml(tagLu)}</div>` : ''}
+    <div class="thumbs" style="margin:0 0 12px">${vignettes}</div>
+    <div id="v-champs"></div>
+    <label class="f">Description installation
+      <textarea id="v-desc" rows="3">${escHtml(v.description_installation)}</textarea>
+    </label>
+    ${v.remarques ? `<div class="card"><strong>Remarques de l'IA</strong><br>${escHtml(v.remarques)}</div>` : ''}
+    <p class="muted">Confiance globale : <strong id="v-conf"></strong></p>
+    ${terrain ? `<label class="btn block" for="v-reprise" style="margin-top:8px">Reprendre une photo de plaque</label>
+      <input class="hidden-input" type="file" id="v-reprise" accept="image/*" capture="environment">` : ''}`;
+
+  // Une ligne par champ : libellé + puces d'état, valeur, statut
+  const dessinerChamp = (cle, libelle, c) => {
+    const puces = [];
+    if (c.statut === 'ILLISIBLE') puces.push('<span class="badge alarm">ILLISIBLE</span>');
+    else if (c.statut !== 'LU') puces.push(`<span class="badge">${escHtml(c.statut)}</span>`);
+    if (!c.modifie && c.confiance === 'faible' && c.statut !== 'ILLISIBLE') puces.push('<span class="badge warn">Confiance faible</span>');
+    if (c.modifie) puces.push('<span class="badge">modifié</span>');
+    const classe = c.statut === 'ILLISIBLE' && !c.modifie ? 'alarm' : (!c.modifie && c.confiance === 'faible' ? 'warn' : '');
+    return `
+      <div class="champ ${classe}" data-cle="${cle}">
+        <div class="champ-tete"><span>${escHtml(libelle)}</span><span>${puces.join(' ')}</span></div>
+        <div class="champ-saisie">
+          <input type="text" class="num" value="${escHtml(c.valeur)}" placeholder="${escHtml(CODES_SANS_VALEUR.includes(c.statut) ? c.statut : '')}" aria-label="${escHtml(libelle)}">
+          <select aria-label="Statut ${escHtml(libelle)}">${STATUTS_CHAMP.map(st => `<option ${st === c.statut ? 'selected' : ''}>${st}</option>`).join('')}</select>
+        </div>
+        ${c.modifie && (c.valeurIA || c.statutIA) ? `<div class="muted" style="font-size:14px">IA : ${escHtml(c.valeurIA || c.statutIA)}</div>` : ''}
+      </div>`;
+  };
+  const objetChamp = cle => cle === 'tag_equipement' || cle === 'nom_equipement' ? v[cle] : v.champs[cle];
+  const libelles = Object.fromEntries(champsListe(v).map(([k, l]) => [k, l]));
+
+  const dessinerTout = () => {
+    document.getElementById('v-champs').innerHTML = champsListe(v).map(([k, l, c]) => dessinerChamp(k, l, c)).join('');
+    document.getElementById('v-conf').textContent = { elevee: 'élevée', moyenne: 'moyenne', faible: 'faible' }[confianceGlobale(v)];
+    brancherChamps();
+  };
+
+  // Modification d'un champ : marque « modifié » et ajuste le statut
+  const brancherChamps = () => {
+    document.querySelectorAll('#v-champs .champ').forEach(div => {
+      const cle = div.dataset.cle;
+      const c = objetChamp(cle);
+      const inp = div.querySelector('input'), sel = div.querySelector('select');
+      inp.onchange = () => {
+        c.valeur = inp.value.trim();
+        if (c.valeur && CODES_SANS_VALEUR.includes(c.statut)) c.statut = 'LU';      // l'opérateur l'a lu
+        if (!c.valeur && !CODES_SANS_VALEUR.includes(c.statut)) c.statut = 'ILLISIBLE';
+        c.modifie = c.valeur !== c.valeurIA || c.statut !== c.statutIA;
+        redessinerChamp(div, cle);
+      };
+      sel.onchange = () => {
+        c.statut = sel.value;
+        if (CODES_SANS_VALEUR.includes(c.statut)) c.valeur = '';                   // un code n'a jamais de valeur
+        c.modifie = c.valeur !== c.valeurIA || c.statut !== c.statutIA;
+        redessinerChamp(div, cle);
+      };
+    });
+  };
+  const redessinerChamp = (div, cle) => {
+    div.outerHTML = dessinerChamp(cle, libelles[cle], objetChamp(cle));
+    document.getElementById('v-conf').textContent = { elevee: 'élevée', moyenne: 'moyenne', faible: 'faible' }[confianceGlobale(v)];
+    brancherChamps();
+  };
+  dessinerTout();
+
+  // Agrandir une photo pour vérifier la lecture
+  view().querySelectorAll('[data-photo]').forEach(b => b.onclick = () => voirPhoto(photos.find(p => p.id === b.dataset.photo)));
+
+  // Enregistre la copie de travail dans la session
+  const enregistrer = async statut => {
+    const desc = document.getElementById('v-desc').value.trim();
+    if (desc !== (s.valeurs.description_installation || '')) v.descriptionModifiee = true;
+    v.description_installation = desc;
+    const cur = await DB.getSession(id);
+    cur.valeurs = v;
+    cur.confianceGlobale = confianceGlobale(v);
+    cur.champsModifies = champsListe(v).filter(x => x[2].modifie).map(x => x[1])
+      .concat(v.descriptionModifiee ? ['Description installation'] : []);
+    if (statut) { cur.statut = statut; cur.valideeLe = new Date().toISOString(); }
+    await DB.putSession(cur);
+    return cur;
+  };
+
+  // Reprise de photo de plaque : ajout puis nouvelle analyse (les corrections sont gardées)
+  document.getElementById('v-reprise')?.addEventListener('change', async e => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = '';
+    if (!files.length) return;
+    await enregistrer(null);
+    if (!(await ajouterFichiers(id, 'plaque', 'camera', files))) return;
+    const cur = await DB.getSession(id);
+    cur.statut = 'attente'; cur.derniereErreur = null; cur.erreurType = null;
+    await DB.putSession(cur);
+    if (!navigator.onLine) toast("Photo ajoutée. Hors ligne : l'analyse partira au retour du réseau.");
+    aller('#/s/' + encodeURIComponent(id) + '/capture');
+    traiterFile();
+  });
+
+  if (s.statut === 'a_valider') {
+    actionbar().innerHTML = `
+      <button class="btn primary" id="v-suivant">Valider et moteur suivant</button>
+      <button class="btn" id="v-fin">Valider et terminer</button>`;
+    actionbar().classList.add('pile');
+    document.getElementById('v-suivant').onclick = async () => {
+      const cur = await enregistrer('validee');
+      toast('Session validée');
+      prefillSession = { site: cur.site, zone: cur.zone };
+      aller('#/nouvelle');
+    };
+    document.getElementById('v-fin').onclick = async () => {
+      await enregistrer('validee');
+      toast('Session validée');
+      aller('#/sessions');
+    };
+  } else {
+    // Déjà validée ou exportée : une correction la repasse en « Validée » (à réexporter)
+    actionbar().innerHTML = '<button class="btn primary" id="v-save">Enregistrer les corrections</button>';
+    const avant = JSON.stringify(s.valeurs);
+    document.getElementById('v-save').onclick = async () => {
+      const desc = document.getElementById('v-desc').value.trim();
+      // Rien n'a changé : on ne touche pas au statut (une session exportée le reste)
+      if (JSON.stringify(v) === avant && desc === (s.valeurs.description_installation || '')) return aller('#/sessions');
+      await enregistrer('validee');
+      toast('Corrections enregistrées');
+      aller('#/sessions');
+    };
+  }
+}
+
+// Visionneuse plein écran (toucher pour fermer)
+function voirPhoto(p) {
+  if (!p) return;
+  const url = URL.createObjectURL(p.jpeg);
+  const div = document.createElement('div');
+  div.id = 'viewer';
+  div.innerHTML = `<img src="${url}" alt="Photo"><button class="btn primary">Fermer</button>`;
+  div.onclick = () => { URL.revokeObjectURL(url); div.remove(); };
+  document.body.appendChild(div);
 }
 
 /* ---------------------------------------------------------------------
@@ -940,6 +1559,7 @@ async function demarrer() {
     return;
   }
   router();
+  traiterFile();          // sessions restées en attente (ex. réseau revenu app fermée)
 }
 
 /* ---------------------------------------------------------------------
