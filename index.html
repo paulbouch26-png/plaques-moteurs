@@ -1,0 +1,973 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Plaques moteurs</title>
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Plaques">
+<meta name="theme-color" content="#d6d6d6">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<style>
+/* =====================================================================
+   STYLE — inspiré d'ISA-101 : fond gris neutre, texte sombre.
+   La couleur est RÉSERVÉE aux anomalies (rouge = erreur / ILLISIBLE,
+   ambre = avertissement / confiance faible / hors ligne).
+   ===================================================================== */
+:root {
+  --bg: #d6d6d6;          /* fond de page */
+  --surface: #ebebeb;     /* cartes, champs */
+  --surface-2: #f5f5f5;   /* champs de saisie */
+  --border: #8c8c8c;
+  --text: #111111;
+  --muted: #444444;
+  --btn: #333333;         /* bouton principal : gris foncé, pas de couleur */
+  --btn-text: #ffffff;
+  --alarm: #c00000;       /* rouge : erreur, ILLISIBLE */
+  --warn: #f0b400;        /* ambre : avertissement (texte noir dessus) */
+  --tap: 56px;            /* cible tactile minimale (gants) */
+  --radius: 6px;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--text); }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+  font-size: 17px; line-height: 1.35;
+  -webkit-text-size-adjust: 100%;
+  min-height: 100vh;
+  /* place pour la barre d'action en bas */
+  padding-bottom: calc(var(--tap) + 32px + env(safe-area-inset-bottom));
+}
+.num { font-variant-numeric: tabular-nums; }
+
+/* ---------- En-tête ---------- */
+header {
+  position: sticky; top: 0; z-index: 10;
+  display: flex; align-items: center; gap: 8px;
+  padding: calc(env(safe-area-inset-top) + 6px) 12px 6px;
+  background: var(--bg); border-bottom: 1px solid var(--border);
+}
+header h1 { flex: 1; font-size: 19px; margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hbtn {
+  min-width: var(--tap); min-height: 44px; padding: 0 12px;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--surface); color: var(--text); font-size: 16px;
+}
+#net { font-size: 14px; padding: 4px 8px; border-radius: var(--radius); border: 1px solid var(--border); white-space: nowrap; }
+#net.off { background: var(--warn); border-color: #000; font-weight: 600; }
+
+/* ---------- Bandeaux ---------- */
+.banner { margin: 10px 12px 0; padding: 12px; border-radius: var(--radius); border: 2px solid #000; }
+.banner.warn { background: var(--warn); }
+.banner.alarm { background: var(--alarm); color: #fff; }
+.banner.info { background: var(--surface); border-width: 1px; border-color: var(--border); }
+.banner button { margin-top: 8px; }
+
+/* ---------- Contenu ---------- */
+main { padding: 12px; max-width: 720px; margin: 0 auto; }
+h2 { font-size: 18px; margin: 18px 0 8px; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; margin-bottom: 10px; }
+.muted { color: var(--muted); font-size: 15px; }
+
+/* ---------- Formulaires ---------- */
+label.f { display: block; margin-bottom: 14px; font-weight: 600; }
+label.f small { font-weight: 400; color: var(--muted); }
+input[type=text], input[type=password], input[type=date], input[type=number], select {
+  display: block; width: 100%; min-height: var(--tap); margin-top: 4px;
+  padding: 0 12px; font-size: 18px; color: var(--text);
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius);
+}
+input:focus, select:focus { outline: 3px solid #000; outline-offset: 0; }
+.row { display: flex; gap: 8px; align-items: stretch; }
+.row > * { flex: 1; }
+.seg { display: flex; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; margin-top: 4px; }
+.seg button { flex: 1; min-height: var(--tap); border: 0; background: var(--surface-2); font-size: 17px; color: var(--text); }
+.seg button + button { border-left: 1px solid var(--border); }
+.seg button.sel { background: var(--btn); color: var(--btn-text); font-weight: 600; }
+.err { color: var(--alarm); font-weight: 600; margin-top: 4px; }
+
+/* ---------- Boutons ---------- */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  min-height: var(--tap); padding: 0 16px; font-size: 18px; font-weight: 600;
+  border-radius: var(--radius); border: 1px solid var(--border);
+  background: var(--surface); color: var(--text); text-decoration: none; cursor: pointer;
+}
+.btn.primary { background: var(--btn); color: var(--btn-text); border-color: #000; }
+.btn.danger { background: var(--surface); color: var(--alarm); border-color: var(--alarm); }
+.btn:disabled { opacity: .4; }
+.btn.block { width: 100%; }
+
+/* Barre d'action fixe en bas (zone du pouce) */
+#actionbar {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 10;
+  padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
+  background: var(--bg); border-top: 1px solid var(--border);
+  display: flex; gap: 8px;
+}
+#actionbar:empty { display: none; }
+#actionbar .btn { flex: 1; }
+#actionbar .btn.small { flex: 0 0 auto; }
+
+/* ---------- Liste des sessions ---------- */
+.filters { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px; }
+.filters #f-date { grid-column: 1 / -1; }
+.filters select, .filters input { margin-top: 0; font-size: 16px; padding: 0 8px; }
+.sess { display: block; width: 100%; text-align: left; font: inherit; color: inherit; cursor: pointer; }
+.sess .l1 { display: flex; justify-content: space-between; gap: 8px; font-weight: 700; }
+.sess .l2 { margin-top: 4px; }
+.status { font-weight: 600; white-space: nowrap; }
+.badge { display: inline-block; padding: 2px 8px; border: 1px solid #000; border-radius: 4px; font-size: 14px; font-weight: 600; }
+.badge.warn { background: var(--warn); }
+.badge.alarm { background: var(--alarm); color: #fff; border-color: var(--alarm); }
+.empty { text-align: center; padding: 40px 12px; color: var(--muted); }
+
+/* ---------- Capture ---------- */
+.cap { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px; margin-bottom: 12px; }
+.cap-head { display: flex; gap: 8px; }
+.cap-head label { min-height: 72px; font-size: 20px; }
+.cap-head .shoot { flex: 1; }
+.cap-head .gal { flex: 0 0 96px; font-size: 16px; padding: 0 8px; }
+.count { font-weight: 700; }
+.cap.required .count.zero { color: var(--alarm); }
+.thumbs { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px; margin-top: 10px; }
+.thumbs:empty { display: none; }
+.th { position: relative; aspect-ratio: 1; background: #bbb; border-radius: 4px; overflow: hidden; }
+.th img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.th .del {
+  position: absolute; top: 0; right: 0; width: 44px; height: 44px;
+  border: 0; background: rgba(0,0,0,.65); color: #fff; font-size: 20px; border-bottom-left-radius: 6px;
+}
+.th .n { position: absolute; left: 4px; bottom: 4px; background: rgba(0,0,0,.65); color: #fff; font-size: 12px; padding: 1px 5px; border-radius: 3px; }
+.hidden-input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+
+/* ---------- Toast et attente ---------- */
+#toast {
+  position: fixed; left: 12px; right: 12px; z-index: 30;
+  bottom: calc(var(--tap) + 40px + env(safe-area-inset-bottom));
+  padding: 14px; border-radius: var(--radius); background: #222; color: #fff; font-size: 17px;
+  display: none;
+}
+#toast.show { display: block; }
+#toast.alarm { background: var(--alarm); }
+#busy {
+  position: fixed; inset: 0; z-index: 40; background: rgba(0,0,0,.45);
+  display: none; align-items: center; justify-content: center;
+}
+#busy.show { display: flex; }
+#busy div { background: var(--surface); padding: 20px 24px; border-radius: var(--radius); font-size: 18px; font-weight: 600; }
+</style>
+</head>
+<body>
+
+<header>
+  <button class="hbtn" id="btn-back" hidden aria-label="Retour">‹</button>
+  <h1 id="title">Plaques moteurs</h1>
+  <span id="net" class="num">En ligne</span>
+  <button class="hbtn" id="btn-settings" aria-label="Réglages">⚙</button>
+</header>
+<div id="banners"></div>
+<main id="view"></main>
+<div id="actionbar"></div>
+<div id="toast" role="status"></div>
+<div id="busy"><div id="busy-msg">Traitement…</div></div>
+
+<script src="vendor/exifr.full.umd.js"></script>
+<script>
+'use strict';
+/* =====================================================================
+   PLAQUES MOTEURS — Phase 1 : Réglages, sessions, capture, IndexedDB.
+   Tout le code de l'app est ici. Commentaires en français.
+   ===================================================================== */
+
+/* ---------------------------------------------------------------------
+   1. CONSTANTES
+   --------------------------------------------------------------------- */
+const APP_VERSION = '0.1.0';
+const REGLAGES_KEY = 'pm_reglages';      // réglages (petits) → localStorage
+const PERSIST_KEY  = 'pm_persist_demande';
+const DB_NAME = 'plaques-moteurs';
+const DB_VERSION = 1;
+
+const MODELES = {
+  'claude-sonnet-5-5': 'Sonnet (par défaut)',
+  'claude-opus-5-5':   'Opus (plaques difficiles)'
+};
+
+// Types de photo : clé interne → libellé affiché
+const TYPES = {
+  nom:          'Nom/étiquette',
+  plaque:       'Plaque',
+  installation: 'Installation'
+};
+
+// Statuts de session : clé interne → libellé affiché
+const STATUTS = {
+  capture:   'Capture en cours',
+  attente:   "En attente d'analyse",
+  a_valider: 'À valider',
+  validee:   'Validée',
+  exportee:  'Exportée'
+};
+
+const PHOTO_MAX = 1568;       // côté maximal de la photo conservée (px)
+const PHOTO_QUALITE = 0.85;
+const MINI_MAX = 300;         // côté maximal de la miniature (px)
+const MAX_PHOTOS_SESSION = 20;
+const RAPPEL_EXPORT_JOURS = 3;
+
+/* ---------------------------------------------------------------------
+   2. RÉGLAGES (localStorage — jamais de photos ici)
+   La clé API ne quitte jamais l'appareil, sauf vers api.anthropic.com.
+   --------------------------------------------------------------------- */
+const REGLAGES_DEFAUT = {
+  nom: '', initiales: '', cle: '',
+  modele: 'claude-sonnet-5-5',
+  siteDefaut: '', gps: false,
+  ecartMin: 3                 // utilisé en phase 5 (regroupement)
+};
+
+function lireReglages() {
+  try {
+    return Object.assign({}, REGLAGES_DEFAUT, JSON.parse(localStorage.getItem(REGLAGES_KEY) || '{}'));
+  } catch { return Object.assign({}, REGLAGES_DEFAUT); }
+}
+function ecrireReglages(r) { localStorage.setItem(REGLAGES_KEY, JSON.stringify(r)); }
+function reglagesComplets(r) { return r.nom && /^[A-Z]{2,3}$/.test(r.initiales); }
+function cleMasquee(cle) { return cle ? '••••' + cle.slice(-4) : 'Aucune clé'; }
+
+/* ---------------------------------------------------------------------
+   3. INDEXEDDB — deux stores : sessions et photos
+   --------------------------------------------------------------------- */
+let dbPromise = null;
+
+function ouvrirDB() {
+  if (dbPromise) return dbPromise;
+  dbPromise = new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains('sessions')) {
+        const s = db.createObjectStore('sessions', { keyPath: 'id' });
+        s.createIndex('statut', 'statut');
+        s.createIndex('datePriseVue', 'datePriseVue');
+        s.createIndex('site', 'site');
+      }
+      if (!db.objectStoreNames.contains('photos')) {
+        const p = db.createObjectStore('photos', { keyPath: 'id' });
+        p.createIndex('sessionId', 'sessionId');
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+  return dbPromise;
+}
+
+// Transforme une requête IndexedDB en promesse
+function reqP(req) {
+  return new Promise((resolve, reject) => {
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+// Attend la fin d'une transaction (= données réellement écrites)
+function txFin(tx) {
+  return new Promise((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error || new Error('Transaction annulée'));
+  });
+}
+
+const DB = {
+  async getSession(id) {
+    const db = await ouvrirDB();
+    return reqP(db.transaction('sessions').objectStore('sessions').get(id));
+  },
+  async toutesSessions() {
+    const db = await ouvrirDB();
+    return reqP(db.transaction('sessions').objectStore('sessions').getAll());
+  },
+  async putSession(s) {
+    s.modifieLe = new Date().toISOString();
+    const db = await ouvrirDB();
+    const tx = db.transaction('sessions', 'readwrite');
+    tx.objectStore('sessions').put(s);
+    await txFin(tx);
+    return s;
+  },
+  async photosSession(sessionId) {
+    const db = await ouvrirDB();
+    const idx = db.transaction('photos').objectStore('photos').index('sessionId');
+    return reqP(idx.getAll(sessionId));
+  },
+  // Liste légère {sessionId, id} de toutes les photos (sans lire les blobs) — pour les compteurs
+  async toutesPhotosMeta() {
+    const db = await ouvrirDB();
+    const out = [];
+    const store = db.transaction('photos').objectStore('photos');
+    return new Promise((resolve, reject) => {
+      const req = store.index('sessionId').openKeyCursor();
+      req.onsuccess = () => {
+        const c = req.result;
+        if (!c) return resolve(out);
+        out.push({ sessionId: c.key, id: c.primaryKey });
+        c.continue();
+      };
+      req.onerror = () => reject(req.error);
+    });
+  },
+  // Ajoute des photos ET met à jour la session dans la même transaction
+  async ajouterPhotos(session, photos) {
+    session.modifieLe = new Date().toISOString();
+    const db = await ouvrirDB();
+    const tx = db.transaction(['sessions', 'photos'], 'readwrite');
+    photos.forEach(p => tx.objectStore('photos').put(p));
+    tx.objectStore('sessions').put(session);
+    await txFin(tx);
+  },
+  async supprimerPhoto(session, photoId) {
+    session.modifieLe = new Date().toISOString();
+    const db = await ouvrirDB();
+    const tx = db.transaction(['sessions', 'photos'], 'readwrite');
+    tx.objectStore('photos').delete(photoId);
+    tx.objectStore('sessions').put(session);
+    await txFin(tx);
+  },
+  async supprimerSession(id) {
+    const photos = await DB.photosSession(id);
+    const db = await ouvrirDB();
+    const tx = db.transaction(['sessions', 'photos'], 'readwrite');
+    photos.forEach(p => tx.objectStore('photos').delete(p.id));
+    tx.objectStore('sessions').delete(id);
+    await txFin(tx);
+  }
+};
+
+/* ---------------------------------------------------------------------
+   4. OUTILS
+   --------------------------------------------------------------------- */
+function escHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+const pad = n => String(n).padStart(2, '0');
+
+// Date locale au format ISO sans fuseau : "2026-11-01T14:32:10"
+// (les dates EXIF n'ont pas de fuseau : on reste en heure locale partout)
+function isoLocal(d) {
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+function fmtDateHeure(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return d.toLocaleDateString('fr-CA') + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+}
+
+// ID unique entre appareils : PB-20261101-1432-K7Q2
+function genSessionId(initiales, date = new Date()) {
+  const alpha = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';   // sans 0/O ni 1/I
+  const rnd = new Uint8Array(4);
+  crypto.getRandomValues(rnd);
+  const suffixe = Array.from(rnd, b => alpha[b % alpha.length]).join('');
+  const j = `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}`;
+  const h = `${pad(date.getHours())}${pad(date.getMinutes())}`;
+  return `${initiales}-${j}-${h}-${suffixe}`;
+}
+
+let toastTimer = null;
+function toast(msg, alarme = false) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'show' + (alarme ? ' alarm' : '');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.className = '', alarme ? 5000 : 2500);
+}
+function occupe(msg) {
+  document.getElementById('busy-msg').textContent = msg;
+  document.getElementById('busy').classList.add('show');
+}
+function libre() { document.getElementById('busy').classList.remove('show'); }
+
+/* ---------------------------------------------------------------------
+   5. TRAITEMENT DES PHOTOS
+   Ordre IMPORTANT : lire l'EXIF sur le fichier d'origine AVANT le canvas
+   (le canvas efface les métadonnées).
+   --------------------------------------------------------------------- */
+
+// Lit la date de prise de vue et le GPS. Ne plante jamais.
+async function lireExif(file) {
+  try {
+    const e = await exifr.parse(file, {
+      pick: ['DateTimeOriginal', 'CreateDate', 'GPSLatitude', 'GPSLongitude', 'GPSLatitudeRef', 'GPSLongitudeRef'],
+      gps: true
+    });
+    if (!e) return {};
+    const date = e.DateTimeOriginal || e.CreateDate;
+    const gps = (typeof e.latitude === 'number' && typeof e.longitude === 'number')
+      ? { lat: e.latitude, lon: e.longitude, source: 'exif' } : null;
+    return { date: date instanceof Date && !isNaN(date) ? date : null, gps };
+  } catch {
+    return {};
+  }
+}
+
+// Décode l'image (JPEG, PNG, HEIC… selon ce que le navigateur sait lire).
+// L'orientation EXIF est appliquée automatiquement par le navigateur.
+async function decoderImage(file) {
+  if (window.createImageBitmap) {
+    try { return await createImageBitmap(file, { imageOrientation: 'from-image' }); } catch { /* repli */ }
+  }
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Format d\'image non lisible')); };
+    img.src = url;
+  });
+}
+
+// Redimensionne (côté max) et encode en JPEG
+function versJpeg(img, coteMax, qualite) {
+  const w0 = img.width, h0 = img.height;
+  const k = Math.min(1, coteMax / Math.max(w0, h0));
+  const w = Math.round(w0 * k), h = Math.round(h0 * k);
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  const ctx = c.getContext('2d');
+  ctx.drawImage(img, 0, 0, w, h);
+  return new Promise((resolve, reject) =>
+    c.toBlob(b => b ? resolve({ blob: b, w, h }) : reject(new Error('Conversion JPEG impossible')), 'image/jpeg', qualite));
+}
+
+// Prépare un fichier : EXIF → JPEG 1568 px → miniature 300 px.
+// "rang" sert de dernier repli pour la date (ordre des fichiers).
+async function preparerPhoto(file, rang, debutLot) {
+  const exif = await lireExif(file);
+  let datePrise, sourceDate;
+  if (exif.date) { datePrise = exif.date; sourceDate = 'exif'; }
+  else if (file.lastModified) { datePrise = new Date(file.lastModified); sourceDate = 'fichier'; }
+  else { datePrise = new Date(debutLot + rang * 1000); sourceDate = 'ordre'; }
+
+  const img = await decoderImage(file);
+  const grande = await versJpeg(img, PHOTO_MAX, PHOTO_QUALITE);
+  const mini = await versJpeg(img, MINI_MAX, 0.8);
+  if (img.close) img.close();
+  return {
+    datePrise: isoLocal(datePrise), sourceDate,
+    gps: exif.gps || null,
+    jpeg: grande.blob, largeur: grande.w, hauteur: grande.h,
+    miniature: mini.blob
+  };
+}
+
+/* ---------------------------------------------------------------------
+   6. GPS DE L'APPAREIL (si activé dans Réglages)
+   --------------------------------------------------------------------- */
+function positionAppareil() {
+  return new Promise(resolve => {
+    if (!navigator.geolocation) return resolve(null);
+    navigator.geolocation.getCurrentPosition(
+      p => resolve({ lat: p.coords.latitude, lon: p.coords.longitude, source: 'appareil' }),
+      () => resolve(null),
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 });
+  });
+}
+
+/* ---------------------------------------------------------------------
+   7. INDICATEUR RÉSEAU
+   --------------------------------------------------------------------- */
+function majReseau() {
+  const el = document.getElementById('net');
+  const on = navigator.onLine;
+  el.textContent = on ? 'En ligne' : 'Hors ligne';
+  el.classList.toggle('off', !on);
+}
+window.addEventListener('online', majReseau);
+window.addEventListener('offline', majReseau);
+
+/* ---------------------------------------------------------------------
+   8. NAVIGATION (routes par #)
+   #/sessions · #/reglages · #/nouvelle · #/s/<ID>/capture
+   --------------------------------------------------------------------- */
+const view = () => document.getElementById('view');
+const actionbar = () => document.getElementById('actionbar');
+let urlsMiniatures = [];        // object URLs à libérer à chaque changement d'écran
+
+function aller(hash) { location.hash = hash; }
+
+function entete(titre, retour) {
+  document.getElementById('title').textContent = titre;
+  const b = document.getElementById('btn-back');
+  b.hidden = !retour;
+  b.onclick = () => aller(retour);
+}
+
+async function router() {
+  urlsMiniatures.forEach(u => URL.revokeObjectURL(u));
+  urlsMiniatures = [];
+  actionbar().innerHTML = '';
+  document.getElementById('banners').innerHTML = '';
+  window.scrollTo(0, 0);
+
+  const r = lireReglages();
+  const h = location.hash || '#/sessions';
+  // Premier lancement : réglages obligatoires
+  if (!reglagesComplets(r) && h !== '#/reglages') return aller('#/reglages');
+
+  let m;
+  if (h === '#/reglages') return ecranReglages();
+  if (h === '#/nouvelle') return ecranNouvelle();
+  if ((m = h.match(/^#\/s\/([^/]+)\/capture$/))) return ecranCapture(decodeURIComponent(m[1]));
+  return ecranSessions();
+}
+window.addEventListener('hashchange', router);
+
+/* ---------------------------------------------------------------------
+   9. ÉCRAN RÉGLAGES
+   --------------------------------------------------------------------- */
+function ecranReglages() {
+  const r = lireReglages();
+  const premier = !reglagesComplets(r);
+  entete('Réglages', premier ? null : '#/sessions');
+
+  view().innerHTML = `
+    ${premier ? '<div class="card">Renseigne ton nom et tes initiales pour commencer.</div>' : ''}
+    <label class="f">Nom de l'opérateur
+      <input type="text" id="r-nom" autocomplete="name" value="${escHtml(r.nom)}">
+    </label>
+    <label class="f">Initiales <small>(2 ou 3 lettres, utilisées dans les ID)</small>
+      <input type="text" id="r-ini" maxlength="3" autocapitalize="characters" autocomplete="off" value="${escHtml(r.initiales)}">
+    </label>
+    <div class="err" id="r-err" hidden></div>
+
+    <h2>Clé API</h2>
+    <div class="card">
+      <div>Clé actuelle : <strong class="num" id="r-cle-aff">${escHtml(cleMasquee(r.cle))}</strong></div>
+      <label class="f" style="margin:10px 0 0">Nouvelle clé <small>(laisser vide pour garder l'actuelle)</small>
+        <input type="password" id="r-cle" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="sk-ant-…">
+      </label>
+      <div class="row" style="margin-top:10px">
+        <button class="btn" id="r-test">Tester la clé</button>
+      </div>
+      <div id="r-test-res" class="muted" style="margin-top:8px"></div>
+    </div>
+
+    <label class="f">Modèle IA
+      <div class="seg" id="r-modele">
+        ${Object.entries(MODELES).map(([k, v]) =>
+          `<button type="button" data-v="${k}" class="${r.modele === k ? 'sel' : ''}">${v.split(' ')[0]}</button>`).join('')}
+      </div>
+      <small>Sonnet par défaut. Opus pour les plaques difficiles (plus lent, plus cher).</small>
+    </label>
+
+    <label class="f">Site par défaut
+      <input type="text" id="r-site" value="${escHtml(r.siteDefaut)}">
+    </label>
+
+    <label class="f">Position GPS
+      <div class="seg" id="r-gps">
+        <button type="button" data-v="1" class="${r.gps ? 'sel' : ''}">Oui</button>
+        <button type="button" data-v="0" class="${r.gps ? '' : 'sel'}">Non</button>
+      </div>
+    </label>
+
+    <p class="muted">Version ${APP_VERSION}</p>`;
+
+  // Boutons segmentés
+  let modele = r.modele, gps = r.gps;
+  document.querySelectorAll('#r-modele button').forEach(b => b.onclick = () => {
+    modele = b.dataset.v;
+    document.querySelectorAll('#r-modele button').forEach(x => x.classList.toggle('sel', x === b));
+  });
+  document.querySelectorAll('#r-gps button').forEach(b => b.onclick = () => {
+    gps = b.dataset.v === '1';
+    document.querySelectorAll('#r-gps button').forEach(x => x.classList.toggle('sel', x === b));
+    // Demande l'autorisation tout de suite, pour qu'iOS ne la demande pas en pleine capture
+    if (gps) positionAppareil();
+  });
+  document.getElementById('r-ini').oninput = e => e.target.value = e.target.value.toUpperCase().replace(/[^A-Z]/g, '');
+
+  // Lit le formulaire → objet réglages (sans enregistrer)
+  const lireForm = () => {
+    const nv = Object.assign({}, lireReglages(), {
+      nom: document.getElementById('r-nom').value.trim(),
+      initiales: document.getElementById('r-ini').value.trim(),
+      modele, gps,
+      siteDefaut: document.getElementById('r-site').value.trim()
+    });
+    const cle = document.getElementById('r-cle').value.trim();
+    if (cle) nv.cle = cle;
+    return nv;
+  };
+
+  document.getElementById('r-test').onclick = async () => {
+    const nv = lireForm();
+    const res = document.getElementById('r-test-res');
+    if (!nv.cle) { res.innerHTML = '<span class="err">Entre une clé, puis touche « Tester la clé ».</span>'; return; }
+    res.textContent = 'Test en cours…';
+    const t = await testerCle(nv.cle, nv.modele);
+    res.innerHTML = t.ok ? '<strong>Clé acceptée.</strong>' : `<span class="err">${escHtml(t.message)}</span>`;
+  };
+
+  actionbar().innerHTML = '<button class="btn primary" id="r-save">Enregistrer</button>';
+  document.getElementById('r-save').onclick = () => {
+    const nv = lireForm();
+    const err = document.getElementById('r-err');
+    if (!nv.nom) { err.textContent = 'Entre ton nom.'; err.hidden = false; return; }
+    if (!/^[A-Z]{2,3}$/.test(nv.initiales)) { err.textContent = 'Entre 2 ou 3 lettres pour les initiales.'; err.hidden = false; return; }
+    ecrireReglages(nv);
+    toast('Réglages enregistrés');
+    aller('#/sessions');
+  };
+}
+
+// Appel minimal (1 jeton) pour vérifier la clé et le modèle.
+async function testerCle(cle, modele) {
+  if (!navigator.onLine) return { ok: false, message: 'Hors ligne. Teste la clé une fois en ligne.' };
+  try {
+    const rep = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'x-api-key': cle,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true',
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({ model: modele, max_tokens: 1, messages: [{ role: 'user', content: 'OK' }] })
+    });
+    if (rep.ok) return { ok: true };
+    if (rep.status === 401) return { ok: false, message: 'Clé refusée. Vérifie la clé dans Réglages ou contacte Paul.' };
+    if (rep.status === 403) return { ok: false, message: 'Clé sans permission pour ce modèle. Contacte Paul.' };
+    if (rep.status === 404) return { ok: false, message: 'Modèle introuvable. Choisis l\'autre modèle ou contacte Paul.' };
+    if (rep.status === 429) return { ok: false, message: 'Clé valide, mais limite atteinte. Réessaie dans une minute.' };
+    return { ok: false, message: `Service indisponible (code ${rep.status}). Réessaie plus tard.` };
+  } catch {
+    return { ok: false, message: 'Pas de réseau. Réessaie une fois en ligne.' };
+  }
+}
+
+/* ---------------------------------------------------------------------
+   10. ÉCRAN LISTE DES SESSIONS
+   --------------------------------------------------------------------- */
+let filtres = { date: '', site: '', operateur: '' };
+
+async function ecranSessions() {
+  entete('Plaques moteurs', null);
+  const [sessions, photos] = await Promise.all([DB.toutesSessions(), DB.toutesPhotosMeta()]);
+
+  // Nombre de photos par session
+  const nbPhotos = {};
+  photos.forEach(p => nbPhotos[p.sessionId] = (nbPhotos[p.sessionId] || 0) + 1);
+
+  const sites = [...new Set(sessions.map(s => s.site).filter(Boolean))].sort();
+  const ops = [...new Set(sessions.map(s => s.operateur?.nom).filter(Boolean))].sort();
+
+  // Tri : date de prise de vue décroissante (sinon date de création)
+  const cleTri = s => s.datePriseVue || s.creeLe;
+  const liste = sessions
+    .filter(s => !filtres.date || (cleTri(s) || '').slice(0, 10) === filtres.date)
+    .filter(s => !filtres.site || s.site === filtres.site)
+    .filter(s => !filtres.operateur || s.operateur?.nom === filtres.operateur)
+    .sort((a, b) => (cleTri(b) || '').localeCompare(cleTri(a) || ''));
+
+  view().innerHTML = `
+    <div class="filters">
+      <input type="date" id="f-date" value="${escHtml(filtres.date)}" aria-label="Date">
+      <select id="f-site" aria-label="Site"><option value="">Tous sites</option>
+        ${sites.map(s => `<option ${s === filtres.site ? 'selected' : ''}>${escHtml(s)}</option>`).join('')}</select>
+      <select id="f-op" aria-label="Opérateur"><option value="">Tous opér.</option>
+        ${ops.map(o => `<option ${o === filtres.operateur ? 'selected' : ''}>${escHtml(o)}</option>`).join('')}</select>
+    </div>
+    ${liste.length ? liste.map(s => carteSession(s, nbPhotos[s.id] || 0)).join('')
+      : `<div class="empty">${sessions.length ? 'Aucune session pour ces filtres.' : 'Aucune session.<br>Touche « Nouvelle session » pour relever un premier moteur.'}</div>`}`;
+
+  document.getElementById('f-date').onchange = e => { filtres.date = e.target.value; ecranSessions(); };
+  document.getElementById('f-site').onchange = e => { filtres.site = e.target.value; ecranSessions(); };
+  document.getElementById('f-op').onchange = e => { filtres.operateur = e.target.value; ecranSessions(); };
+  view().querySelectorAll('.sess').forEach(b => b.onclick = () => ouvrirSession(b.dataset.id));
+
+  afficherRappels(sessions);
+
+  actionbar().innerHTML = '<button class="btn primary" id="btn-new">Nouvelle session</button>';
+  document.getElementById('btn-new').onclick = () => aller('#/nouvelle');
+}
+
+function carteSession(s, nb) {
+  const nonExporte = s.statut === 'validee';
+  const titre = s.tagSaisi || s.valeurs?.tag_equipement?.valeur || '(sans tag)';
+  return `
+    <button class="card sess" data-id="${escHtml(s.id)}">
+      <div class="l1"><span>${escHtml(titre)}</span><span class="status">${escHtml(STATUTS[s.statut] || s.statut)}</span></div>
+      <div class="l2 muted">${escHtml([s.site, s.zone].filter(Boolean).join(' · ') || 'Site non renseigné')}</div>
+      <div class="l2 muted num">${escHtml(fmtDateHeure(s.datePriseVue || s.creeLe))} · ${nb} photo${nb > 1 ? 's' : ''} · ${escHtml(s.operateur?.initiales || '')}</div>
+      <div class="l2 muted num" style="font-size:13px">${escHtml(s.id)}</div>
+      ${nonExporte ? '<div class="l2"><span class="badge">Non exporté</span></div>' : ''}
+      ${s.derniereErreur ? `<div class="l2"><span class="badge alarm">${escHtml(s.derniereErreur)}</span></div>` : ''}
+    </button>`;
+}
+
+function ouvrirSession(id) {
+  // Phase 1 : seule la capture existe. Les autres écrans viendront en phases 2 et 3.
+  aller('#/s/' + encodeURIComponent(id) + '/capture');
+}
+
+// Bandeau : rappel d'export (sessions validées depuis plus de 3 jours)
+function afficherRappels(sessions) {
+  const b = document.getElementById('banners');
+  const limite = Date.now() - RAPPEL_EXPORT_JOURS * 86400000;
+  const enRetard = sessions.filter(s => s.statut === 'validee' && new Date(s.valideeLe || s.modifieLe).getTime() < limite);
+  let html = '';
+  if (enRetard.length) {
+    html += `<div class="banner warn"><strong>${enRetard.length} session${enRetard.length > 1 ? 's validées' : ' validée'} non exportée${enRetard.length > 1 ? 's' : ''} depuis plus de ${RAPPEL_EXPORT_JOURS} jours.</strong><br>Exporte-les : iOS peut effacer les données de l'app.</div>`;
+  }
+  b.innerHTML = html;
+}
+
+/* ---------------------------------------------------------------------
+   11. ÉCRAN NOUVELLE SESSION
+   "prefill" permet à « Valider et moteur suivant » (phase 2) de reprendre site et zone.
+   --------------------------------------------------------------------- */
+let prefillSession = null;
+
+function ecranNouvelle() {
+  const r = lireReglages();
+  entete('Nouvelle session', '#/sessions');
+  const site = prefillSession?.site ?? r.siteDefaut;
+  const zone = prefillSession?.zone ?? '';
+  prefillSession = null;
+
+  view().innerHTML = `
+    <label class="f">Site
+      <input type="text" id="n-site" value="${escHtml(site)}">
+    </label>
+    <label class="f">Zone <small>(optionnel)</small>
+      <input type="text" id="n-zone" value="${escHtml(zone)}">
+    </label>
+    <label class="f">Tag d'équipement <small>(optionnel, ex. M-305)</small>
+      <input type="text" id="n-tag" autocapitalize="characters" autocomplete="off">
+    </label>
+    <p class="muted">Opérateur : ${escHtml(r.nom)} (${escHtml(r.initiales)})</p>`;
+
+  actionbar().innerHTML = '<button class="btn primary" id="n-go">Commencer la capture</button>';
+  document.getElementById('n-go').onclick = async () => {
+    const maintenant = new Date();
+    const s = {
+      id: genSessionId(r.initiales, maintenant),
+      schema: 1,
+      operateur: { nom: r.nom, initiales: r.initiales },
+      site: document.getElementById('n-site').value.trim(),
+      zone: document.getElementById('n-zone').value.trim(),
+      tagSaisi: document.getElementById('n-tag').value.trim(),
+      source: 'Terrain',
+      statut: 'capture',
+      datePriseVue: null,          // = date de la 1re photo, calculée à l'ajout
+      creeLe: maintenant.toISOString(),
+      modifieLe: null,
+      gps: null,
+      resultatIA: null,
+      valeurs: null,
+      alerteMultiMoteurs: false,
+      confianceGlobale: null,
+      analyses: [],
+      derniereErreur: null,
+      valideeLe: null,
+      exporteeLe: null
+    };
+    await DB.putSession(s);
+    aller('#/s/' + encodeURIComponent(s.id) + '/capture');
+    // Position de l'appareil en arrière-plan (ne bloque pas la capture)
+    if (r.gps) {
+      positionAppareil().then(async pos => {
+        if (!pos) return;
+        const cur = await DB.getSession(s.id);
+        if (cur && !cur.gps) { cur.gps = pos; await DB.putSession(cur); }
+      });
+    }
+  };
+}
+
+/* ---------------------------------------------------------------------
+   12. ÉCRAN CAPTURE
+   Trois types ; pour chacun : appareil photo (capture) + Galerie (multiple).
+   --------------------------------------------------------------------- */
+async function ecranCapture(id) {
+  const s = await DB.getSession(id);
+  if (!s) { toast('Session introuvable.', true); return aller('#/sessions'); }
+  entete(s.tagSaisi || 'Capture', '#/sessions');
+
+  const photos = (await DB.photosSession(id)).sort((a, b) => a.type.localeCompare(b.type) || a.n - b.n);
+  const parType = { nom: [], plaque: [], installation: [] };
+  photos.forEach(p => (parType[p.type] || (parType[p.type] = [])).push(p));
+  const modifiable = s.statut === 'capture';
+
+  const bloc = type => {
+    const liste = parType[type] || [];
+    const vignettes = liste.map(p => {
+      const url = URL.createObjectURL(p.miniature);
+      urlsMiniatures.push(url);
+      return `<div class="th"><img src="${url}" alt="${escHtml(TYPES[type])} ${p.n}">
+        <span class="n">${p.n}${p.sourceDate !== 'exif' ? ' · sans EXIF' : ''}</span>
+        ${modifiable ? `<button class="del" data-id="${escHtml(p.id)}" aria-label="Supprimer la photo">✕</button>` : ''}</div>`;
+    }).join('');
+    return `
+      <section class="cap ${type === 'plaque' ? 'required' : ''}">
+        ${modifiable ? `
+        <div class="cap-head">
+          <label class="btn primary shoot" for="cam-${type}">${TYPES[type]}</label>
+          <label class="btn gal" for="gal-${type}" aria-label="Ajouter depuis la galerie (${TYPES[type]})">Galerie</label>
+          <input class="hidden-input" type="file" id="cam-${type}" accept="image/*" capture="environment" data-type="${type}" data-origine="camera">
+          <input class="hidden-input" type="file" id="gal-${type}" accept="image/*" multiple data-type="${type}" data-origine="galerie">
+        </div>` : `<strong>${TYPES[type]}</strong>`}
+        <div class="muted" style="margin-top:8px"><span class="count num ${liste.length ? '' : 'zero'}">${liste.length}</span> photo${liste.length > 1 ? 's' : ''}${type === 'plaque' && !liste.length ? ' — au moins une photo de plaque est requise' : ''}</div>
+        <div class="thumbs">${vignettes}</div>
+      </section>`;
+  };
+
+  const infos = [s.site, s.zone].filter(Boolean).join(' · ');
+  view().innerHTML = `
+    <div class="muted" style="margin-bottom:10px">${escHtml(infos || 'Site non renseigné')}<br><span class="num">${escHtml(s.id)}</span>
+      ${s.datePriseVue ? `<br>Prise de vue : <span class="num">${escHtml(fmtDateHeure(s.datePriseVue))}</span>` : ''}</div>
+    ${!modifiable ? `<div class="card">Statut : <strong>${escHtml(STATUTS[s.statut])}</strong>. Les photos ne sont plus modifiables.</div>` : ''}
+    ${bloc('nom')}${bloc('plaque')}${bloc('installation')}
+    <button class="btn danger block" id="c-del" style="margin-top:20px">Supprimer la session</button>`;
+
+  view().querySelectorAll('input[type=file]').forEach(inp => inp.onchange = async () => {
+    const files = Array.from(inp.files || []);
+    inp.value = '';                      // permet de reprendre la même photo
+    if (files.length) await ajouterFichiers(s.id, inp.dataset.type, inp.dataset.origine, files);
+  });
+  view().querySelectorAll('.th .del').forEach(b => b.onclick = async () => {
+    if (!confirm('Supprimer cette photo ?')) return;
+    const cur = await DB.getSession(s.id);
+    const restantes = (await DB.photosSession(s.id)).filter(p => p.id !== b.dataset.id);
+    cur.datePriseVue = datePremiere(restantes);
+    await DB.supprimerPhoto(cur, b.dataset.id);
+    ecranCapture(s.id);
+  });
+  document.getElementById('c-del').onclick = async () => {
+    if (!confirm(`Supprimer la session ${s.id} et toutes ses photos ? Cette action est définitive.`)) return;
+    await DB.supprimerSession(s.id);
+    toast('Session supprimée');
+    aller('#/sessions');
+  };
+
+  if (modifiable) {
+    const ok = (parType.plaque || []).length > 0;
+    actionbar().innerHTML = `<button class="btn primary" id="c-fin" ${ok ? '' : 'disabled'}>Terminer et analyser</button>`;
+    document.getElementById('c-fin').onclick = async () => {
+      const cur = await DB.getSession(s.id);
+      cur.statut = 'attente';           // Phase 2 : l'analyse IA partira d'ici
+      await DB.putSession(cur);
+      toast("Session en attente d'analyse");
+      aller('#/sessions');
+    };
+  }
+}
+
+// Date de la session = date de prise de vue la plus ancienne
+function datePremiere(photos) {
+  const dates = photos.map(p => p.datePrise).filter(Boolean).sort();
+  return dates[0] || null;
+}
+
+// Traite puis enregistre des fichiers. Une photo en erreur n'empêche pas les autres.
+async function ajouterFichiers(sessionId, type, origine, files) {
+  const existantes = await DB.photosSession(sessionId);
+  if (existantes.length + files.length > MAX_PHOTOS_SESSION) {
+    toast(`Maximum ${MAX_PHOTOS_SESSION} photos par session. Retire des photos ou ouvre une nouvelle session.`, true);
+    return;
+  }
+  const debutLot = Date.now();
+  const prets = [];
+  let echecs = 0;
+  for (let i = 0; i < files.length; i++) {
+    occupe(files.length > 1 ? `Traitement des photos… ${i + 1}/${files.length}` : 'Traitement de la photo…');
+    try { prets.push(await preparerPhoto(files[i], i, debutLot)); }
+    catch { echecs++; }
+  }
+  // Numérotation dans l'ordre de prise de vue
+  prets.sort((a, b) => a.datePrise.localeCompare(b.datePrise));
+  let n = Math.max(0, ...existantes.filter(p => p.type === type).map(p => p.n));
+  const ajouts = prets.map(p => {
+    n++;
+    return Object.assign(p, {
+      id: `${sessionId}_${type}_${n}`, sessionId, type, typeIA: null, n, origine,
+      ajouteeLe: new Date().toISOString()
+    });
+  });
+
+  try {
+    if (ajouts.length) {
+      const s = await DB.getSession(sessionId);
+      s.datePriseVue = datePremiere(existantes.concat(ajouts));
+      // GPS EXIF d'une photo prioritaire sur la position de l'appareil
+      const gpsExif = ajouts.find(p => p.gps)?.gps;
+      if (gpsExif && (!s.gps || s.gps.source !== 'exif')) s.gps = gpsExif;
+      await DB.ajouterPhotos(s, ajouts);
+    }
+  } catch (e) {
+    libre();
+    toast("Enregistrement impossible : espace de stockage plein ? Exporte puis libère de l'espace.", true);
+    return;
+  }
+  libre();
+  if (echecs) toast(`${echecs} photo${echecs > 1 ? 's' : ''} illisible${echecs > 1 ? 's' : ''}. Reprends-la${echecs > 1 ? 's' : ''}.`, true);
+  else if (ajouts.some(p => p.sourceDate !== 'exif') && origine === 'galerie') toast('Date de prise de vue absente : date du fichier utilisée.');
+  ecranCapture(sessionId);
+}
+
+/* ---------------------------------------------------------------------
+   13. DÉMARRAGE
+   --------------------------------------------------------------------- */
+async function demarrer() {
+  majReseau();
+  document.getElementById('btn-settings').onclick = () => aller('#/reglages');
+
+  // Stockage persistant : demandé une seule fois (évite la purge par iOS)
+  if (navigator.storage?.persist && !localStorage.getItem(PERSIST_KEY)) {
+    try { await navigator.storage.persist(); } catch { /* ignoré */ }
+    localStorage.setItem(PERSIST_KEY, '1');
+  }
+
+  try { await ouvrirDB(); }
+  catch {
+    view().innerHTML = '<div class="banner alarm">Base locale inaccessible. Ferme l\'app puis rouvre-la. Évite la navigation privée.</div>';
+    return;
+  }
+  router();
+}
+
+/* ---------------------------------------------------------------------
+   14. SERVICE WORKER (hors ligne) + mise à jour
+   --------------------------------------------------------------------- */
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('sw.js').then(reg => {
+    reg.addEventListener('updatefound', () => {
+      const nw = reg.installing;
+      nw?.addEventListener('statechange', () => {
+        // Nouvelle version prête et une ancienne contrôle la page → proposer de recharger
+        if (nw.state === 'installed' && navigator.serviceWorker.controller) {
+          const b = document.createElement('div');
+          b.className = 'banner info';
+          b.innerHTML = 'Mise à jour disponible.<br><button class="btn primary">Recharger</button>';
+          b.querySelector('button').onclick = () => nw.postMessage('activer');
+          document.body.prepend(b);
+        }
+      });
+    });
+  }).catch(() => { /* ex. ouverture en file:// : l'app marche, sans hors ligne */ });
+  let recharge = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!recharge) { recharge = true; location.reload(); }
+  });
+}
+
+demarrer();
+</script>
+</body>
+</html>
