@@ -7,7 +7,7 @@ Principe : **une session = un moteur = une ligne Excel.**
 
 - [x] Phase 1 : Réglages, sessions, capture, stockage IndexedDB (sans IA)
 - [x] Phase 2 : analyse IA, écran de validation, file d'attente hors ligne (testée avec réponses simulées, pas encore avec la vraie API)
-- [ ] Phase 3 : export Excel, lot ZIP, partage iOS
+- [x] Phase 3 : export Excel, lot ZIP, partage iOS (testé dans le navigateur, partage iOS simulé)
 - [ ] Phase 4 : import et consolidation des lots
 - [ ] Phase 5 : import de photos existantes (après tests terrain des phases 1 à 4)
 
@@ -20,6 +20,8 @@ manifest.webmanifest
 icons/                 180 (iOS), 192, 512
 vendor/                librairies figées, jamais de CDN à l'usage
   exifr.full.umd.js    7.1.3
+  exceljs.min.js       4.4.0   (chargé à la demande par chargerScript)
+  jszip.min.js         3.10.1  (idem)
 ```
 
 ## Règles non négociables
@@ -50,6 +52,15 @@ vendor/                librairies figées, jamais de CDN à l'usage
 - Chaque appel est ajouté à `session.analyses` (date, modèle réellement utilisé, jetons, nb photos, ok) → feuille Journal.
 - `valeursDepuisIA()` : un champ `modifie` par l'opérateur n'est jamais écrasé par une nouvelle analyse. Un code ILLISIBLE / ABSENT / NON TROUVÉ n'a jamais de valeur.
 - Le tag saisi n'est pas envoyé à l'IA ; un écart tag saisi / tag lu s'affiche en ambre.
+
+## Export (section « 12 ter » de index.html)
+
+- Écran `#/export` : sélection par défaut = sessions `validee` ; mode « Toutes validées » ajoute les `exportee`. Filtres depuis-date, site, opérateur ; cases à cocher.
+- **En deux temps** : « Préparer » fabrique le fichier, puis « Partager » appelle `navigator.share` (iOS refuse le partage s'il ne suit pas immédiatement un toucher). Sans partage de fichiers (ordinateur) : téléchargement.
+- Partage réussi → sessions `exportee` + `exporteeLe`. Partage annulé (`AbortError`) → rien ne change.
+- Excel (`construireExcel`) : feuille **Plaques** (37 colonnes, codes ILLISIBLE / ABSENT / NON TROUVÉ écrits en texte, CALCULÉ → « valeur (CALCULÉ) », ILLISIBLE en plus en rouge gras, miniatures 120 px ancrées, ligne figée, filtre auto) et feuille **Journal** (une ligne par session, jetons cumulés).
+- Dates : `dateExcel()` convertit l'heure locale en UTC « identique » car ExcelJS écrit en UTC.
+- Lot ZIP : `Plaques_<ini>_<AAAAMMJJ-HHMM>.xlsx`, `photos/<ID>_<type>_<n>.jpg`, `lot.json` (`construireLot`, `schema: 1`, sessions complètes + métadonnées des photos). JPEG stockés sans recompression (`STORE`).
 
 ## Conventions
 

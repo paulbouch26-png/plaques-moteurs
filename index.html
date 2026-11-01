@@ -149,6 +149,10 @@ body:has(#actionbar.pile) { padding-bottom: calc(2 * var(--tap) + 44px + env(saf
 .hidden-input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
 button.th { border: 0; padding: 0; cursor: pointer; }
 
+/* ---------- Export ---------- */
+.ligne-export { display: flex; gap: 12px; align-items: center; min-height: var(--tap); cursor: pointer; }
+.ligne-export input { flex: 0 0 28px; width: 28px; height: 28px; accent-color: var(--btn); }
+
 /* ---------- Validation ---------- */
 textarea {
   display: block; width: 100%; margin-top: 4px; padding: 10px 12px; font: inherit; font-size: 17px;
@@ -211,7 +215,7 @@ textarea {
 /* ---------------------------------------------------------------------
    1. CONSTANTES
    --------------------------------------------------------------------- */
-const APP_VERSION = '0.2.0';
+const APP_VERSION = '0.3.0';
 const REGLAGES_KEY = 'pm_reglages';      // réglages (petits) → localStorage
 const PERSIST_KEY  = 'pm_persist_demande';
 const API_URL = 'https://api.anthropic.com/v1/messages';
@@ -565,6 +569,7 @@ async function router() {
   let m;
   if (h === '#/reglages') return ecranReglages();
   if (h === '#/nouvelle') return ecranNouvelle();
+  if (h === '#/export') return ecranExport();
   if ((m = h.match(/^#\/s\/([^/]+)\/capture$/))) return ecranCapture(decodeURIComponent(m[1]));
   if ((m = h.match(/^#\/s\/([^/]+)\/validation$/))) return ecranValidation(decodeURIComponent(m[1]));
   return ecranSessions();
@@ -1090,8 +1095,12 @@ async function ecranSessions() {
 
   afficherRappels(sessions);
 
-  actionbar().innerHTML = '<button class="btn primary" id="btn-new">Nouvelle session</button>';
+  actionbar().innerHTML = `
+    <button class="btn primary" id="btn-new">Nouvelle session</button>
+    <button class="btn" id="btn-export">Exporter</button>`;
+  actionbar().classList.add('pile');
   document.getElementById('btn-new').onclick = () => aller('#/nouvelle');
+  document.getElementById('btn-export').onclick = () => aller('#/export');
 }
 
 function carteSession(s, nb) {
@@ -1538,6 +1547,296 @@ function voirPhoto(p) {
   div.innerHTML = `<img src="${url}" alt="Photo"><button class="btn primary">Fermer</button>`;
   div.onclick = () => { URL.revokeObjectURL(url); div.remove(); };
   document.body.appendChild(div);
+}
+
+/* ---------------------------------------------------------------------
+   12 ter. EXPORT — Excel seul ou lot complet (ZIP)
+   En deux temps : « Préparer » fabrique le fichier, puis « Partager »
+   ouvre la feuille de partage iOS (iOS exige que le partage suive
+   immédiatement un toucher : on ne peut pas le lancer après un long calcul).
+   --------------------------------------------------------------------- */
+const MIME_XLSX = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+let exportFiltres = { mode: 'nonexportees', depuis: '', site: '', operateur: '' };
+let exportExclus = new Set();   // sessions décochées
+let fichierPret = null;         // { file, ids } prêt à partager
+
+async function ecranExport() {
+  entete('Exporter', '#/sessions');
+  const toutes = await DB.toutesSessions();
+  const statutsVises = exportFiltres.mode === 'nonexportees' ? ['validee'] : ['validee', 'exportee'];
+  const eligibles = toutes.filter(s => statutsVises.includes(s.statut));
+  const sites = [...new Set(eligibles.map(s => s.site).filter(Boolean))].sort();
+  const ops = [...new Set(eligibles.map(s => s.operateur?.nom).filter(Boolean))].sort();
+  const dateDe = s => (s.datePriseVue || s.creeLe || '').slice(0, 10);
+  const liste = eligibles
+    .filter(s => !exportFiltres.depuis || dateDe(s) >= exportFiltres.depuis)
+    .filter(s => !exportFiltres.site || s.site === exportFiltres.site)
+    .filter(s => !exportFiltres.operateur || s.operateur?.nom === exportFiltres.operateur)
+    .sort((a, b) => (b.datePriseVue || '').localeCompare(a.datePriseVue || ''));
+  const choisies = liste.filter(s => !exportExclus.has(s.id));
+  const aValider = toutes.filter(s => ['a_valider', 'attente', 'capture'].includes(s.statut)).length;
+
+  view().innerHTML = `
+    <div class="seg" id="x-mode" style="margin-bottom:10px">
+      <button type="button" data-v="nonexportees" class="${exportFiltres.mode === 'nonexportees' ? 'sel' : ''}">Non exportées</button>
+      <button type="button" data-v="toutes" class="${exportFiltres.mode === 'toutes' ? 'sel' : ''}">Toutes validées</button>
+    </div>
+    <div class="filters">
+      <label class="muted" style="grid-column:1/-1">Depuis le
+        <input type="date" id="x-depuis" value="${escHtml(exportFiltres.depuis)}"></label>
+      <select id="x-site" aria-label="Site"><option value="">Tous sites</option>
+        ${sites.map(s => `<option ${s === exportFiltres.site ? 'selected' : ''}>${escHtml(s)}</option>`).join('')}</select>
+      <select id="x-op" aria-label="Opérateur"><option value="">Tous opér.</option>
+        ${ops.map(o => `<option ${o === exportFiltres.operateur ? 'selected' : ''}>${escHtml(o)}</option>`).join('')}</select>
+    </div>
+    ${aValider ? `<p class="muted">${aValider} session${aValider > 1 ? 's' : ''} pas encore validée${aValider > 1 ? 's' : ''} : non incluse${aValider > 1 ? 's' : ''}.</p>` : ''}
+    <h2 class="num">${choisies.length} session${choisies.length > 1 ? 's' : ''} sélectionnée${choisies.length > 1 ? 's' : ''}</h2>
+    ${liste.length ? liste.map(s => `
+      <label class="card ligne-export">
+        <input type="checkbox" data-id="${escHtml(s.id)}" ${exportExclus.has(s.id) ? '' : 'checked'}>
+        <span><strong>${escHtml(s.tagSaisi || s.valeurs?.tag_equipement?.valeur || '(sans tag)')}</strong>
+          ${s.statut === 'exportee' ? ' <span class="badge">Déjà exportée</span>' : ''}<br>
+          <span class="muted num">${escHtml(fmtDateHeure(s.datePriseVue || s.creeLe))} · ${escHtml([s.site, s.zone].filter(Boolean).join(' · '))} · ${escHtml(s.operateur?.initiales || '')}</span></span>
+      </label>`).join('')
+      : '<div class="empty">Aucune session validée à exporter.</div>'}
+    ${fichierPret ? `<div class="card"><strong>Fichier prêt</strong><br><span class="num">${escHtml(fichierPret.file.name)} · ${tailleLisible(fichierPret.file.size)}</span></div>` : ''}`;
+
+  // Tout changement de sélection invalide le fichier déjà préparé
+  const changer = fn => e => { fn(e); fichierPret = null; ecranExport(); };
+  document.querySelectorAll('#x-mode button').forEach(b => b.onclick = changer(() => exportFiltres.mode = b.dataset.v));
+  document.getElementById('x-depuis').onchange = changer(e => exportFiltres.depuis = e.target.value);
+  document.getElementById('x-site').onchange = changer(e => exportFiltres.site = e.target.value);
+  document.getElementById('x-op').onchange = changer(e => exportFiltres.operateur = e.target.value);
+  view().querySelectorAll('.ligne-export input').forEach(cb => cb.onchange = changer(() => {
+    cb.checked ? exportExclus.delete(cb.dataset.id) : exportExclus.add(cb.dataset.id);
+  }));
+
+  actionbar().classList.add('pile');
+  if (fichierPret) {
+    actionbar().innerHTML = `
+      <button class="btn primary" id="x-partager">Partager</button>
+      <button class="btn" id="x-annuler">Changer la sélection</button>`;
+    document.getElementById('x-partager').onclick = partagerFichier;
+    document.getElementById('x-annuler').onclick = () => { fichierPret = null; ecranExport(); };
+  } else {
+    const off = choisies.length ? '' : 'disabled';
+    actionbar().innerHTML = `
+      <button class="btn primary" id="x-zip" ${off}>Préparer le lot complet (ZIP)</button>
+      <button class="btn" id="x-xlsx" ${off}>Préparer l'Excel seul</button>`;
+    document.getElementById('x-zip').onclick = () => preparerExport(choisies, 'zip');
+    document.getElementById('x-xlsx').onclick = () => preparerExport(choisies, 'excel');
+  }
+}
+
+function tailleLisible(o) {
+  return o > 1048576 ? (o / 1048576).toFixed(1).replace('.', ',') + ' Mo' : Math.ceil(o / 1024) + ' Ko';
+}
+// AAAAMMJJ-HHMM pour les noms de fichiers
+function horodatage(d = new Date()) {
+  return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`;
+}
+const nomPhoto = p => p.id + '.jpg';     // <ID>_<type>_<n>.jpg
+
+// Charge une librairie de vendor/ à la demande (déjà en cache hors ligne)
+const scriptsCharges = {};
+function chargerScript(src) {
+  return scriptsCharges[src] ||= new Promise((resolve, reject) => {
+    const el = document.createElement('script');
+    el.src = src;
+    el.onload = resolve;
+    el.onerror = () => { delete scriptsCharges[src]; reject(new Error('Librairie introuvable : ' + src)); };
+    document.head.appendChild(el);
+  });
+}
+
+async function preparerExport(sessions, format) {
+  occupe("Préparation de l'Excel…");
+  try {
+    await chargerScript('vendor/exceljs.min.js');
+    if (format === 'zip') await chargerScript('vendor/jszip.min.js');
+    const r = lireReglages();
+    const horo = horodatage();
+    const nomXlsx = `Plaques_${r.initiales}_${horo}.xlsx`;
+    const donnees = [];
+    for (const s of sessions) donnees.push({ s, photos: trierPhotosPourIA(await DB.photosSession(s.id)) });
+    const xlsx = await construireExcel(donnees);
+
+    let file;
+    if (format === 'excel') {
+      file = new File([xlsx], nomXlsx, { type: MIME_XLSX });
+    } else {
+      occupe('Préparation du lot…');
+      const zip = new JSZip();
+      zip.file(nomXlsx, xlsx);
+      donnees.forEach(d => d.photos.forEach(p => zip.file('photos/' + nomPhoto(p), p.jpeg)));
+      zip.file('lot.json', JSON.stringify(construireLot(donnees, r), null, 2));
+      // Les JPEG sont déjà compressés : on les stocke tels quels (plus rapide)
+      const blob = await zip.generateAsync({ type: 'blob', compression: 'STORE', mimeType: 'application/zip' });
+      file = new File([blob], `Lot_${r.initiales}_${horo}.zip`, { type: 'application/zip' });
+    }
+    fichierPret = { file, ids: sessions.map(s => s.id) };
+  } catch (e) {
+    toast('Préparation impossible : ' + (e.message || e) + '. Réessaie.', true);
+  } finally {
+    libre();
+  }
+  ecranExport();
+}
+
+// Feuille de partage iOS ; repli : téléchargement (ordinateur)
+async function partagerFichier() {
+  const { file, ids } = fichierPret;
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    try {
+      await navigator.share({ files: [file], title: file.name });
+    } catch (e) {
+      if (e.name === 'AbortError') return toast("Partage annulé. Rien n'est marqué exporté.");
+      return toast('Partage impossible : ' + e.message + '. Réessaie.', true);
+    }
+  } else {
+    const url = URL.createObjectURL(file);
+    const a = Object.assign(document.createElement('a'), { href: url, download: file.name });
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  }
+  // Partagé : les sessions passent en « Exportée »
+  const maintenant = new Date().toISOString();
+  for (const id of ids) {
+    const s = await DB.getSession(id);
+    if (s && s.statut === 'validee') { s.statut = 'exportee'; s.exporteeLe = maintenant; await DB.putSession(s); }
+    else if (s && s.statut === 'exportee') { s.exporteeLe = maintenant; await DB.putSession(s); }
+  }
+  fichierPret = null;
+  exportExclus.clear();
+  toast(`${ids.length} session${ids.length > 1 ? 's exportées' : ' exportée'}`);
+  aller('#/sessions');
+}
+
+/* ---------- Contenu du fichier Excel ---------- */
+
+// Texte d'une cellule : la valeur, ou le code écrit en toutes lettres
+function texteChamp(c) {
+  if (!c) return 'NON TROUVÉ';
+  if (CODES_SANS_VALEUR.includes(c.statut)) return c.statut;
+  if (c.statut === 'CALCULÉ') return `${c.valeur} (CALCULÉ)`;
+  return c.valeur;
+}
+
+// Date locale → date Excel (ExcelJS écrit en UTC : on garde l'heure affichée)
+function dateExcel(iso) {
+  if (!iso) return null;
+  const d = new Date(iso);
+  return new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate(), d.getHours(), d.getMinutes(), d.getSeconds()));
+}
+
+// Première photo d'un type (pour les photos importées : type donné par l'IA)
+function premierePhoto(photos, type) {
+  const typeIA = { plaque: 'Plaque', installation: 'Installation' }[type];
+  return photos.find(p => p.type === type) || photos.find(p => p.type === 'inconnu' && p.typeIA === typeIA);
+}
+
+async function dimensionsImage(blob) {
+  const img = await decoderImage(blob);
+  const d = { w: img.width, h: img.height };
+  if (img.close) img.close();
+  return d;
+}
+
+const LIB_CONFIANCE = { elevee: 'élevée', moyenne: 'moyenne', faible: 'faible' };
+const TAILLE_MINI_XLSX = 120;     // côté max des miniatures dans Excel (px)
+
+async function construireExcel(donnees) {
+  const wb = new ExcelJS.Workbook();
+  wb.creator = 'Plaques moteurs';
+  wb.created = new Date();
+
+  // ----- Feuille Plaques : une ligne par session -----
+  const ws = wb.addWorksheet('Plaques', { views: [{ state: 'frozen', ySplit: 1 }] });
+  const entetes = ['ID', 'Date/heure', 'Source photos', 'Opérateur', 'Site', 'Zone', 'Tag équipement', 'Nom équipement',
+    ...CHAMPS.map(([, l]) => l),
+    'Description installation', 'Confiance globale', 'Champs modifiés', 'Remarques', 'Latitude', 'Longitude',
+    'Photo plaque', 'Photo installation'];
+  const colPlaque = entetes.length - 1, colInstall = entetes.length;      // numéros de colonne (base 1)
+  ws.addRow(entetes).font = { bold: true };
+
+  for (const { s, photos } of donnees) {
+    const v = s.valeurs || { champs: {} };
+    const row = ws.addRow([
+      s.id, dateExcel(s.datePriseVue || s.creeLe), s.source || 'Terrain', s.operateur?.nom || '', s.site || '', s.zone || '',
+      texteChamp(v.tag_equipement), texteChamp(v.nom_equipement),
+      ...CHAMPS.map(([k]) => texteChamp(v.champs?.[k])),
+      v.description_installation || '', LIB_CONFIANCE[s.confianceGlobale] || '', (s.champsModifies || []).join(', '),
+      v.remarques || '', s.gps?.lat ?? '', s.gps?.lon ?? '', '', ''
+    ]);
+    row.getCell(2).numFmt = 'yyyy-mm-dd hh:mm';
+    row.alignment = { vertical: 'top' };
+    // ILLISIBLE : en rouge, en plus du texte (jamais la couleur seule)
+    row.eachCell(c => { if (c.value === 'ILLISIBLE') c.font = { color: { argb: 'FFC00000' }, bold: true }; });
+
+    // Miniatures ancrées dans les cellules
+    let hauteurMax = 0;
+    for (const [col, type] of [[colPlaque, 'plaque'], [colInstall, 'installation']]) {
+      const p = premierePhoto(photos, type);
+      if (!p) continue;
+      const { w, h } = await dimensionsImage(p.miniature);
+      const k = TAILLE_MINI_XLSX / Math.max(w, h);
+      const ext = { width: Math.round(w * k), height: Math.round(h * k) };
+      const imageId = wb.addImage({ base64: 'data:image/jpeg;base64,' + await blobVersBase64(p.miniature), extension: 'jpeg' });
+      ws.addImage(imageId, { tl: { col: col - 1 + 0.05, row: row.number - 1 + 0.05 }, ext, editAs: 'oneCell' });
+      hauteurMax = Math.max(hauteurMax, ext.height);
+    }
+    if (hauteurMax) row.height = (hauteurMax + 8) * 0.75;     // pixels → points
+  }
+
+  // Largeurs de colonnes selon le contenu (bornées)
+  ws.columns.forEach((col, i) => {
+    if (i + 1 >= colPlaque) { col.width = 18; return; }
+    let max = 8;
+    col.eachCell({ includeEmpty: false }, c => {
+      const t = c.value instanceof Date ? '2026-01-01 00:00' : String(c.value ?? '');
+      max = Math.max(max, t.length + 2);
+    });
+    col.width = Math.min(max, 50);
+  });
+  ws.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: entetes.length } };
+
+  // ----- Feuille Journal : consommation de l'IA par session -----
+  const wj = wb.addWorksheet('Journal', { views: [{ state: 'frozen', ySplit: 1 }] });
+  wj.addRow(['ID', 'Opérateur', 'Date', 'Modèle IA', "Jetons d'entrée", 'Jetons de sortie', 'Nombre de photos', "Nombre d'analyses"]).font = { bold: true };
+  for (const { s, photos } of donnees) {
+    const a = s.analyses || [];
+    const row = wj.addRow([
+      s.id, s.operateur?.nom || '', dateExcel(s.datePriseVue || s.creeLe),
+      [...new Set(a.map(x => x.modele).filter(Boolean))].join(', '),
+      a.reduce((t, x) => t + (x.input_tokens || 0), 0),
+      a.reduce((t, x) => t + (x.output_tokens || 0), 0),
+      photos.length, a.length
+    ]);
+    row.getCell(3).numFmt = 'yyyy-mm-dd hh:mm';
+  }
+  [26, 20, 18, 32, 16, 16, 16, 18].forEach((w, i) => wj.getColumn(i + 1).width = w);
+  wj.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: 8 } };
+
+  return wb.xlsx.writeBuffer();
+}
+
+/* ---------- lot.json (schéma 1) ---------- */
+function construireLot(donnees, r) {
+  return {
+    schema: 1,
+    app: 'plaques-moteurs',
+    version_app: APP_VERSION,
+    genere_le: new Date().toISOString(),
+    genere_par: { nom: r.nom, initiales: r.initiales },
+    sessions: donnees.map(({ s, photos }) => ({
+      ...s,
+      photos: photos.map(p => ({
+        fichier: 'photos/' + nomPhoto(p), id: p.id, type: p.type, typeIA: p.typeIA || null, n: p.n,
+        origine: p.origine, datePrise: p.datePrise, sourceDate: p.sourceDate, gps: p.gps || null,
+        largeur: p.largeur, hauteur: p.hauteur
+      }))
+    }))
+  };
 }
 
 /* ---------------------------------------------------------------------

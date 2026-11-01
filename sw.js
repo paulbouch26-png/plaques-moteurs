@@ -5,7 +5,7 @@
    Les appels à api.anthropic.com ne sont JAMAIS mis en cache.
    Quand vendor/ ou cette liste change : changer CACHE (ex. pm-v2).
    ===================================================================== */
-const CACHE = 'pm-v1';
+const CACHE = 'pm-v2';
 const FICHIERS = [
   './',
   './index.html',
@@ -13,8 +13,9 @@ const FICHIERS = [
   './icons/icon-180.png',
   './icons/icon-192.png',
   './icons/icon-512.png',
-  './vendor/exifr.full.umd.js'
-  // Phase 3 : './vendor/exceljs.min.js', './vendor/jszip.min.js'
+  './vendor/exifr.full.umd.js',
+  './vendor/exceljs.min.js',     // chargé seulement à l'export
+  './vendor/jszip.min.js'
 ];
 
 self.addEventListener('install', e => {
