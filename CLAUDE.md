@@ -9,7 +9,7 @@ Principe : **une session = un moteur = une ligne Excel.**
 - [x] Phase 2 : analyse IA, écran de validation, file d'attente hors ligne (testée avec réponses simulées, pas encore avec la vraie API)
 - [x] Phase 3 : export Excel, lot ZIP, partage iOS (testé dans le navigateur, partage iOS simulé)
 - [x] Phase 4 : import et consolidation des lots (testé dans le navigateur avec lots simulés de deux appareils)
-- [ ] Phase 5 : import de photos existantes (après tests terrain des phases 1 à 4)
+- [x] Phase 5 : import de photos existantes (codée à la demande de Paul avant les tests terrain des phases 1 à 4 ; testée dans le navigateur avec photos synthétiques et IA simulée)
 
 ## Fichiers
 
@@ -71,6 +71,16 @@ vendor/                librairies figées, jamais de CDN à l'usage
 - Même ID : contenu identique → « déjà à jour » ; sinon la version au `modifieLe` le plus récent est gardée et un **conflit** est signalé (locale ou importée gardée).
 - `DB.remplacerSession()` remplace session + photos en une transaction et garde le `modifieLe` d'origine (`putSessionTelle`), pour que les imports suivants comparent les bonnes dates.
 - Miniatures recréées à l'import (elles ne sont pas dans le ZIP).
+
+## Import de photos existantes (section « 12 quinquies » de index.html)
+
+- Bouton « Importer des photos existantes » en bas de la liste des sessions (sélection multiple, 200 photos max).
+- `lireImportPhotos()` : `preparerPhoto()` sur chaque fichier (EXIF puis JPEG, comme la capture). Toutes datées par l'EXIF → tri chronologique ; sinon ordre des fichiers + bandeau d'avertissement.
+- `regrouper()` : écart > `reglages.ecartMin` minutes (3 par défaut, réglable dans Réglages) entre deux photos consécutives → nouveau groupe.
+- Écran `#/import-photos` (`ecranGroupes`) : état en mémoire dans `importEnCours` (perdu si iOS ferme l'app). Toucher une photo la sélectionne ; « Déplacer vers… » un groupe ou un « Nouveau groupe » (= séparer) ; « Fusionner avec le groupe suivant » ; « Retirer ». Site / zone / tag par groupe. Groupe > 20 photos refusé.
+- `creerSessionsImportees()` : un groupe = une session `source: 'Importée'`, `statut: 'attente'`, photos `type: 'inconnu'` (`<ID>_inconnu_<n>`), puis `traiterFile()`.
+- L'IA remplit `classement_photos` → `photo.typeIA`. À la validation, un menu par photo permet de corriger le type (`typeModifie`, jamais écrasé ensuite) ; « Relancer l'analyse avec ces types » envoie le type corrigé à l'IA.
+- Sessions importées : pas de reprise de photo, pas de « Modifier les photos », bouton « Valider et session suivante » (prochaine session à valider). Excel : « Photo plaque / installation » prises via `typeIA`.
 
 ## Conventions
 

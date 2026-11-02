@@ -114,6 +114,8 @@ input:focus, select:focus { outline: 3px solid #000; outline-offset: 0; }
 /* Deux actions : la principale en bas (pouce), la secondaire au-dessus */
 #actionbar.pile { flex-direction: column-reverse; }
 #actionbar.pile .btn { flex: none; width: 100%; }
+#actionbar.pile .row { width: 100%; }
+#actionbar.pile .row .btn { flex: 1; width: auto; min-width: 0; }
 body:has(#actionbar.pile) { padding-bottom: calc(2 * var(--tap) + 44px + env(safe-area-inset-bottom)); }
 
 /* ---------- Liste des sessions ---------- */
@@ -172,6 +174,17 @@ textarea {
 }
 #viewer img { max-width: 100%; max-height: calc(100% - 80px); object-fit: contain; }
 #viewer .btn { width: calc(100% - 24px); }
+.type-photo { display: flex; flex-direction: column; gap: 4px; }
+.type-photo select { margin-top: 0; min-height: 44px; font-size: 14px; padding: 0 4px; }
+
+/* ---------- Import de photos existantes ---------- */
+.th.sel { outline: 5px solid #000; outline-offset: -5px; }
+.th.sel::after {
+  content: '✓'; position: absolute; top: 4px; right: 4px; width: 32px; height: 32px;
+  background: #000; color: #fff; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 700;
+}
+.groupe .champ-tete { margin-bottom: 8px; }
+.groupe input { font-size: 16px; }
 
 /* ---------- Toast et attente ---------- */
 #toast {
@@ -215,7 +228,7 @@ textarea {
 /* ---------------------------------------------------------------------
    1. CONSTANTES
    --------------------------------------------------------------------- */
-const APP_VERSION = '0.4.0';
+const APP_VERSION = '0.5.0';
 const REGLAGES_KEY = 'pm_reglages';      // réglages (petits) → localStorage
 const PERSIST_KEY  = 'pm_persist_demande';
 const API_URL = 'https://api.anthropic.com/v1/messages';
@@ -584,6 +597,7 @@ async function router() {
   if (h === '#/reglages') return ecranReglages();
   if (h === '#/nouvelle') return ecranNouvelle();
   if (h === '#/export') return ecranExport();
+  if (h === '#/import-photos') return ecranGroupes();
   if ((m = h.match(/^#\/s\/([^/]+)\/capture$/))) return ecranCapture(decodeURIComponent(m[1]));
   if ((m = h.match(/^#\/s\/([^/]+)\/validation$/))) return ecranValidation(decodeURIComponent(m[1]));
   return ecranSessions();
@@ -639,6 +653,10 @@ function ecranReglages() {
       </div>
     </label>
 
+    <label class="f">Écart entre deux moteurs <small>(import de photos existantes, en minutes)</small>
+      <input type="number" id="r-ecart" min="1" max="120" inputmode="numeric" class="num" value="${escHtml(r.ecartMin)}">
+    </label>
+
     <p class="muted">Version ${APP_VERSION}</p>`;
 
   // Boutons segmentés
@@ -661,7 +679,8 @@ function ecranReglages() {
       nom: document.getElementById('r-nom').value.trim(),
       initiales: document.getElementById('r-ini').value.trim(),
       modele, gps,
-      siteDefaut: document.getElementById('r-site').value.trim()
+      siteDefaut: document.getElementById('r-site').value.trim(),
+      ecartMin: Math.min(120, Math.max(1, parseInt(document.getElementById('r-ecart').value, 10) || 3))
     });
     const cle = document.getElementById('r-cle').value.trim();
     if (cle) nv.cle = cle;
@@ -809,6 +828,7 @@ function blobVersBase64(blob) {
 // Ordre d'envoi : Plaque, Nom/étiquette, Installation, puis inconnu (phase 5)
 const ORDRE_TYPES = ['plaque', 'nom', 'installation', 'inconnu'];
 const LIBELLE_TYPE_IA = { plaque: 'Plaque', nom: 'Nom/étiquette', installation: 'Installation', inconnu: 'inconnu' };
+const TYPES_IA = ['Plaque', 'Nom/étiquette', 'Installation', 'Autre'];   // types possibles d'une photo importée
 
 function trierPhotosPourIA(photos) {
   return photos.slice().sort((a, b) =>
@@ -819,7 +839,10 @@ function trierPhotosPourIA(photos) {
 async function contenuMessage(photos) {
   const contenu = [];
   for (let i = 0; i < photos.length; i++) {
-    contenu.push({ type: 'text', text: `Photo ${i + 1} — type : ${LIBELLE_TYPE_IA[photos[i].type] || 'inconnu'}` });
+    // Photo importée dont l'opérateur a corrigé le type : on envoie son type
+    const p = photos[i];
+    const libelle = p.type === 'inconnu' && p.typeModifie && p.typeIA ? p.typeIA : (LIBELLE_TYPE_IA[p.type] || 'inconnu');
+    contenu.push({ type: 'text', text: `Photo ${i + 1} — type : ${libelle}` });
     contenu.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: await blobVersBase64(photos[i].jpeg) } });
   }
   contenu.push({ type: 'text', text: 'Analyse ces photos selon les règles et réponds en JSON.' });
@@ -1017,7 +1040,9 @@ async function analyserSession(id) {
     // Type attribué par l'IA aux photos « inconnu » (phase 5)
     if (resultat.classement_photos.length) {
       const parId = Object.fromEntries(photos.map(p => [p.id, p]));
-      const maj = resultat.classement_photos.map(c => Object.assign(parId[c.photoId], { typeIA: c.type }));
+      // Un type corrigé par l'opérateur n'est jamais écrasé
+      const maj = resultat.classement_photos.filter(c => !parId[c.photoId].typeModifie)
+        .map(c => Object.assign(parId[c.photoId], { typeIA: c.type }));
       await DB.ajouterPhotos(s, maj);
     } else {
       await DB.putSession(s);
@@ -1100,7 +1125,16 @@ async function ecranSessions() {
         ${ops.map(o => `<option ${o === filtres.operateur ? 'selected' : ''}>${escHtml(o)}</option>`).join('')}</select>
     </div>
     ${liste.length ? liste.map(s => carteSession(s, nbPhotos[s.id] || 0)).join('')
-      : `<div class="empty">${sessions.length ? 'Aucune session pour ces filtres.' : 'Aucune session.<br>Touche « Nouvelle session » pour relever un premier moteur.'}</div>`}`;
+      : `<div class="empty">${sessions.length ? 'Aucune session pour ces filtres.' : 'Aucune session.<br>Touche « Nouvelle session » pour relever un premier moteur.'}</div>`}
+    <label class="btn block" for="f-import-photos" style="margin-top:16px">Importer des photos existantes</label>
+    <input class="hidden-input" type="file" id="f-import-photos" accept="image/*" multiple>
+    <p class="muted" style="margin-top:6px">Photos prises hors de l'app (plusieurs moteurs mélangés) : l'app les regroupe par moteur.</p>`;
+
+  document.getElementById('f-import-photos').onchange = e => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = '';
+    if (files.length) lireImportPhotos(files);
+  };
 
   document.getElementById('f-date').onchange = e => { filtres.date = e.target.value; ecranSessions(); };
   document.getElementById('f-site').onchange = e => { filtres.site = e.target.value; ecranSessions(); };
@@ -1128,6 +1162,7 @@ function carteSession(s, nb) {
       <div class="l2 muted num">${escHtml(fmtDateHeure(s.datePriseVue || s.creeLe))} · ${nb} photo${nb > 1 ? 's' : ''} · ${escHtml(s.operateur?.initiales || '')}</div>
       <div class="l2 muted num" style="font-size:13px">${escHtml(s.id)}</div>
       ${nonExporte ? '<div class="l2"><span class="badge">Non exporté</span></div>' : ''}
+      ${s.source === 'Importée' ? '<div class="l2"><span class="badge">Photos importées</span></div>' : ''}
       ${s.statut === 'a_valider' && s.confianceGlobale === 'faible' ? '<div class="l2"><span class="badge warn">Confiance faible</span></div>' : ''}
       ${s.statut === 'a_valider' && s.alerteMultiMoteurs ? '<div class="l2"><span class="badge warn">Deux moteurs ?</span></div>' : ''}
       ${s.derniereErreur ? `<div class="l2"><span class="badge alarm">${escHtml(s.derniereErreur)}</span></div>` : ''}
@@ -1260,12 +1295,23 @@ async function ecranCapture(id) {
       </section>`;
   };
 
+  // Session créée par « Importer des photos existantes » : photos sans type, lecture seule
+  const blocImportees = liste => `
+    <section class="cap"><strong>Photos importées</strong>
+      <div class="muted" style="margin-top:8px">${liste.length} photo${liste.length > 1 ? 's' : ''} · type attribué par l'IA à l'analyse</div>
+      <div class="thumbs">${liste.map(p => {
+        const url = URL.createObjectURL(p.miniature);
+        urlsMiniatures.push(url);
+        return `<div class="th"><img src="${url}" alt="Photo ${p.n}"><span class="n">${p.n}</span></div>`;
+      }).join('')}</div>
+    </section>`;
+
   const infos = [s.site, s.zone].filter(Boolean).join(' · ');
   view().innerHTML = `
     <div class="muted" style="margin-bottom:10px">${escHtml(infos || 'Site non renseigné')}<br><span class="num">${escHtml(s.id)}</span>
       ${s.datePriseVue ? `<br>Prise de vue : <span class="num">${escHtml(fmtDateHeure(s.datePriseVue))}</span>` : ''}</div>
     ${!modifiable ? carteEtatAnalyse(s) : ''}
-    ${bloc('nom')}${bloc('plaque')}${bloc('installation')}
+    ${s.source === 'Importée' ? blocImportees(parType.inconnu || []) : bloc('nom') + bloc('plaque') + bloc('installation')}
     <button class="btn danger block" id="c-del" style="margin-top:20px">Supprimer la session</button>`;
 
   view().querySelectorAll('input[type=file]').forEach(inp => inp.onchange = async () => {
@@ -1308,7 +1354,7 @@ async function ecranCapture(id) {
   } else if (s.statut === 'attente') {
     const boutons = [];
     if (s.derniereErreur) boutons.push('<button class="btn primary" id="c-relance">Relancer l\'analyse</button>');
-    if (!enCours.has(s.id)) boutons.push(`<button class="btn ${s.derniereErreur ? 'small' : ''}" id="c-modif">Modifier les photos</button>`);
+    if (!enCours.has(s.id) && s.source !== 'Importée') boutons.push(`<button class="btn ${s.derniereErreur ? 'small' : ''}" id="c-modif">Modifier les photos</button>`);
     actionbar().innerHTML = boutons.join('');
     document.getElementById('c-relance')?.addEventListener('click', () => {
       if (!navigator.onLine) return toast('Hors ligne. Relance une fois en ligne.', true);
@@ -1411,7 +1457,14 @@ async function ecranValidation(id) {
     const url = URL.createObjectURL(p.miniature);
     urlsMiniatures.push(url);
     const t = p.type === 'inconnu' ? (p.typeIA || 'inconnu') : TYPES[p.type];
-    return `<button class="th" data-photo="${escHtml(p.id)}" aria-label="Voir ${escHtml(t)} ${p.n}"><img src="${url}" alt=""><span class="n">${escHtml(t)}</span></button>`;
+    const bouton = `<button class="th" data-photo="${escHtml(p.id)}" aria-label="Voir ${escHtml(t)} ${p.n}"><img src="${url}" alt=""><span class="n">${escHtml(t)}</span></button>`;
+    if (p.type !== 'inconnu') return bouton;
+    // Photo importée : type attribué par l'IA, modifiable par l'opérateur
+    return `<div class="type-photo">${bouton}
+      <select data-type-photo="${escHtml(p.id)}" aria-label="Type de la photo ${p.n}">
+        ${TYPES_IA.map(x => `<option ${x === p.typeIA ? 'selected' : ''}>${x}</option>`).join('')}
+        ${p.typeIA ? '' : '<option selected disabled>?</option>'}
+      </select>${p.typeModifie ? '<span class="badge">modifié</span>' : ''}</div>`;
   }).join('');
 
   const tagLu = v.tag_equipement.valeur;
@@ -1431,7 +1484,25 @@ async function ecranValidation(id) {
     ${v.remarques ? `<div class="card"><strong>Remarques de l'IA</strong><br>${escHtml(v.remarques)}</div>` : ''}
     <p class="muted">Confiance globale : <strong id="v-conf"></strong></p>
     ${terrain ? `<label class="btn block" for="v-reprise" style="margin-top:8px">Reprendre une photo de plaque</label>
-      <input class="hidden-input" type="file" id="v-reprise" accept="image/*" capture="environment">` : ''}`;
+      <input class="hidden-input" type="file" id="v-reprise" accept="image/*" capture="environment">`
+      : `<button class="btn block" id="v-reanalyse" style="margin-top:8px" ${photos.some(p => p.typeModifie) ? '' : 'hidden'}>Relancer l'analyse avec ces types</button>`}`;
+
+  // Correction du type d'une photo importée : enregistrée tout de suite
+  view().querySelectorAll('[data-type-photo]').forEach(sel => sel.onchange = async () => {
+    const p = photos.find(x => x.id === sel.dataset.typePhoto);
+    p.typeIA = sel.value;
+    p.typeModifie = true;
+    const cur = await DB.getSession(id);
+    await DB.ajouterPhotos(cur, [p]);
+    document.getElementById('v-reanalyse').hidden = false;
+    toast('Type de photo modifié');
+  });
+  document.getElementById('v-reanalyse')?.addEventListener('click', async () => {
+    if (!navigator.onLine) return toast('Hors ligne. Relance une fois en ligne.', true);
+    await enregistrer(null);             // garde les corrections déjà faites
+    await relancerAnalyse(id);
+    aller('#/s/' + encodeURIComponent(id) + '/capture');
+  });
 
   // Une ligne par champ : libellé + puces d'état, valeur, statut
   const dessinerChamp = (cle, libelle, c) => {
@@ -1523,14 +1594,21 @@ async function ecranValidation(id) {
 
   if (s.statut === 'a_valider') {
     actionbar().innerHTML = `
-      <button class="btn primary" id="v-suivant">Valider et moteur suivant</button>
+      <button class="btn primary" id="v-suivant">${terrain ? 'Valider et moteur suivant' : 'Valider et session suivante'}</button>
       <button class="btn" id="v-fin">Valider et terminer</button>`;
     actionbar().classList.add('pile');
     document.getElementById('v-suivant').onclick = async () => {
       const cur = await enregistrer('validee');
       toast('Session validée');
-      prefillSession = { site: cur.site, zone: cur.zone };
-      aller('#/nouvelle');
+      if (terrain) {
+        prefillSession = { site: cur.site, zone: cur.zone };
+        return aller('#/nouvelle');
+      }
+      // Photos importées : on enchaîne sur la prochaine session à valider
+      const suivante = (await DB.toutesSessions())
+        .filter(x => x.statut === 'a_valider')
+        .sort((a, b) => (a.datePriseVue || '').localeCompare(b.datePriseVue || ''))[0];
+      aller(suivante ? '#/s/' + encodeURIComponent(suivante.id) + '/validation' : '#/sessions');
     };
     document.getElementById('v-fin').onclick = async () => {
       await enregistrer('validee');
@@ -2016,6 +2094,230 @@ function carteBilanImport(b) {
       ${b.ignorees.map(escHtml).join('<br>')}</div>` : '';
   const manq = b.photosManquantes ? `<div class="muted" style="margin-top:8px">${b.photosManquantes} photo${b.photosManquantes > 1 ? 's' : ''} absente${b.photosManquantes > 1 ? 's' : ''} ou illisible${b.photosManquantes > 1 ? 's' : ''} dans le lot.</div>` : '';
   return `<div class="card"><strong>Lot importé : ${escHtml(b.fichier)}</strong><br><span class="num">${lignes.join(' · ')}</span>${conflits}${ignorees}${manq}</div>`;
+}
+
+/* ---------------------------------------------------------------------
+   12 quinquies. IMPORT DE PHOTOS EXISTANTES (phase 5)
+   Photos prises hors de l'app, plusieurs moteurs mélangés :
+   1. lecture EXIF + conversion JPEG (comme à la capture)
+   2. regroupement : un écart > ecartMin minutes ouvre un nouveau groupe
+   3. révision par l'opérateur (déplacer, fusionner, séparer, site/zone/tag)
+   4. un groupe = une session « Importée », photos de type « inconnu »
+      que l'IA classe pendant l'analyse.
+   Le travail en cours reste en mémoire : si iOS ferme l'app, on recommence.
+   --------------------------------------------------------------------- */
+const MAX_IMPORT_PHOTOS = 200;
+let importEnCours = null;   // { groupes: [{ site, zone, tag, photos: [] }], sansExif, echecs, selection: Set }
+
+async function lireImportPhotos(files) {
+  if (files.length > MAX_IMPORT_PHOTOS) {
+    return toast(`Maximum ${MAX_IMPORT_PHOTOS} photos par import. Importe en plusieurs fois.`, true);
+  }
+  const debut = Date.now();
+  const items = [];
+  let echecs = 0;
+  for (let i = 0; i < files.length; i++) {
+    occupe(`Lecture des photos… ${i + 1}/${files.length}`);
+    try {
+      const p = await preparerPhoto(files[i], i, debut);
+      p.cle = i;                       // ordre des fichiers, sert de repli
+      items.push(p);
+    } catch { echecs++; }
+  }
+  libre();
+  if (!items.length) return toast('Aucune photo lisible.', true);
+
+  const r = lireReglages();
+  const sansExif = items.filter(p => p.sourceDate !== 'exif').length;
+  // Toutes datées par l'EXIF : ordre chronologique. Sinon : ordre des fichiers.
+  if (!sansExif) items.sort((a, b) => a.datePrise.localeCompare(b.datePrise) || a.cle - b.cle);
+  importEnCours = {
+    groupes: regrouper(items, r.ecartMin).map(photos => ({ site: r.siteDefaut, zone: '', tag: '', photos })),
+    sansExif, echecs, total: items.length,
+    selection: new Set()
+  };
+  aller('#/import-photos');
+}
+
+// Un écart de plus de ecartMin minutes entre deux photos consécutives ouvre un groupe
+function regrouper(items, ecartMin) {
+  const groupes = [];
+  let precedente = null;
+  for (const p of items) {
+    const t = new Date(p.datePrise).getTime();
+    if (precedente === null || Math.abs(t - precedente) > ecartMin * 60000) groupes.push([]);
+    groupes[groupes.length - 1].push(p);
+    precedente = t;
+  }
+  return groupes;
+}
+
+const heureCourte = iso => { const d = new Date(iso); return pad(d.getHours()) + ':' + pad(d.getMinutes()); };
+
+function ecranGroupes() {
+  const imp = importEnCours;
+  if (!imp) return aller('#/sessions');
+  entete('Révision des groupes', null);
+  imp.groupes = imp.groupes.filter(g => g.photos.length);      // plus de groupes vides
+  const nbSel = imp.selection.size;
+
+  view().innerHTML = `
+    <div class="card"><strong class="num">${imp.total} photos · ${imp.groupes.length} groupe${imp.groupes.length > 1 ? 's' : ''}</strong><br>
+      <span class="muted">Un groupe = un moteur = une session. Touche des photos pour les sélectionner, puis déplace-les.</span></div>
+    ${imp.sansExif ? `<div class="banner warn" style="margin:0 0 12px"><strong>${imp.sansExif} photo${imp.sansExif > 1 ? 's' : ''} sans date de prise de vue</strong> (ex. reçues par courriel) : regroupées dans l'ordre des fichiers. Vérifie chaque groupe.</div>` : ''}
+    ${imp.echecs ? `<div class="banner alarm" style="margin:0 0 12px">${imp.echecs} photo${imp.echecs > 1 ? 's' : ''} illisible${imp.echecs > 1 ? 's' : ''}, non importée${imp.echecs > 1 ? 's' : ''}.</div>` : ''}
+    <div class="banner info" style="margin:0 0 12px">Ces sessions ne seront pas validées devant le moteur : aucune reprise de photo possible.</div>
+    ${imp.groupes.map((g, i) => {
+      const dates = g.photos.map(p => p.datePrise).sort();
+      const plage = imp.sansExif ? '' : `${heureCourte(dates[0])}–${heureCourte(dates[dates.length - 1])}`;
+      return `
+      <section class="cap groupe" data-g="${i}">
+        <div class="champ-tete"><span>Groupe ${i + 1} · ${g.photos.length} photo${g.photos.length > 1 ? 's' : ''}</span><span class="num">${plage}</span></div>
+        ${g.photos.length > MAX_PHOTOS_SESSION ? `<div class="err">Plus de ${MAX_PHOTOS_SESSION} photos : sépare ce groupe.</div>` : ''}
+        <div class="row">
+          <input type="text" data-champ="site" placeholder="Site" value="${escHtml(g.site)}" aria-label="Site du groupe ${i + 1}">
+          <input type="text" data-champ="zone" placeholder="Zone" value="${escHtml(g.zone)}" aria-label="Zone du groupe ${i + 1}">
+        </div>
+        <input type="text" data-champ="tag" placeholder="Tag (optionnel)" autocapitalize="characters" value="${escHtml(g.tag)}" aria-label="Tag du groupe ${i + 1}">
+        <div class="thumbs">${g.photos.map(p => {
+          const url = URL.createObjectURL(p.miniature);
+          urlsMiniatures.push(url);
+          return `<button class="th ${imp.selection.has(p.cle) ? 'sel' : ''}" data-cle="${p.cle}" aria-label="Photo ${p.cle + 1}"><img src="${url}" alt=""><span class="n num">${p.sourceDate === 'exif' ? heureCourte(p.datePrise) : '#' + (p.cle + 1)}</span></button>`;
+        }).join('')}</div>
+        ${i < imp.groupes.length - 1 ? `<button class="btn block" data-fusion="${i}" style="margin-top:10px">Fusionner avec le groupe ${i + 2}</button>` : ''}
+      </section>`;
+    }).join('')}`;
+
+  // Saisie site / zone / tag (sans redessiner l'écran)
+  view().querySelectorAll('.groupe input[data-champ]').forEach(inp => inp.oninput = () => {
+    imp.groupes[Number(inp.closest('.groupe').dataset.g)][inp.dataset.champ] = inp.value.trim();
+  });
+  // Sélection d'une photo
+  view().querySelectorAll('.th[data-cle]').forEach(b => b.onclick = () => {
+    const cle = Number(b.dataset.cle);
+    imp.selection.has(cle) ? imp.selection.delete(cle) : imp.selection.add(cle);
+    ecranGroupesConserverDefilement();
+  });
+  // Fusion avec le groupe suivant
+  view().querySelectorAll('[data-fusion]').forEach(b => b.onclick = () => {
+    const i = Number(b.dataset.fusion);
+    const [a, suiv] = [imp.groupes[i], imp.groupes[i + 1]];
+    a.photos = a.photos.concat(suiv.photos);
+    a.tag = a.tag || suiv.tag; a.zone = a.zone || suiv.zone;
+    imp.groupes.splice(i + 1, 1);
+    ecranGroupesConserverDefilement();
+  });
+
+  actionbar().classList.add('pile');
+  if (nbSel) {
+    // Sélection en cours : déplacer vers un groupe (ou un nouveau = séparer), ou retirer
+    actionbar().innerHTML = `
+      <select id="g-dest" class="btn primary" aria-label="Déplacer la sélection">
+        <option value="" selected disabled>Déplacer ${nbSel} photo${nbSel > 1 ? 's' : ''} vers…</option>
+        ${imp.groupes.map((_, i) => `<option value="${i}">Groupe ${i + 1}</option>`).join('')}
+        <option value="nouveau">Nouveau groupe (séparer)</option>
+      </select>
+      <div class="row">
+        <button class="btn" id="g-retirer">Retirer</button>
+        <button class="btn" id="g-desel">Désélectionner</button>
+      </div>`;
+    document.getElementById('g-dest').onchange = e => deplacerSelection(e.target.value);
+    document.getElementById('g-retirer').onclick = () => {
+      imp.groupes.forEach(g => g.photos = g.photos.filter(p => !imp.selection.has(p.cle)));
+      imp.total -= nbSel;
+      imp.selection.clear();
+      if (!imp.total) { importEnCours = null; return aller('#/sessions'); }
+      ecranGroupesConserverDefilement();
+    };
+    document.getElementById('g-desel').onclick = () => { imp.selection.clear(); ecranGroupesConserverDefilement(); };
+  } else {
+    actionbar().innerHTML = `
+      <button class="btn primary" id="g-creer">Créer ${imp.groupes.length} session${imp.groupes.length > 1 ? 's' : ''}</button>
+      <button class="btn" id="g-annuler">Annuler l'import</button>`;
+    document.getElementById('g-creer').onclick = creerSessionsImportees;
+    document.getElementById('g-annuler').onclick = () => {
+      if (!confirm('Annuler l\'import ? Les photos ne seront pas ajoutées.')) return;
+      importEnCours = null;
+      aller('#/sessions');
+    };
+  }
+}
+
+// Redessine sans remonter en haut de la page
+function ecranGroupesConserverDefilement() {
+  const y = window.scrollY;
+  urlsMiniatures.forEach(u => URL.revokeObjectURL(u));
+  urlsMiniatures = [];
+  actionbar().innerHTML = '';
+  ecranGroupes();
+  window.scrollTo(0, y);
+}
+
+function deplacerSelection(dest) {
+  const imp = importEnCours;
+  const choisies = [];
+  let premierGroupe = -1;
+  imp.groupes.forEach((g, i) => {
+    const restent = [];
+    g.photos.forEach(p => {
+      if (imp.selection.has(p.cle)) { choisies.push(p); if (premierGroupe < 0) premierGroupe = i; }
+      else restent.push(p);
+    });
+    g.photos = restent;
+  });
+  if (dest === 'nouveau') {
+    // Le nouveau groupe se place juste après celui d'où viennent les photos
+    const source = imp.groupes[premierGroupe];
+    imp.groupes.splice(premierGroupe + 1, 0, { site: source.site, zone: source.zone, tag: '', photos: choisies });
+  } else {
+    const g = imp.groupes[Number(dest)];
+    g.photos = g.photos.concat(choisies).sort((a, b) => a.datePrise.localeCompare(b.datePrise) || a.cle - b.cle);
+  }
+  imp.selection.clear();
+  ecranGroupesConserverDefilement();
+}
+
+async function creerSessionsImportees() {
+  const imp = importEnCours;
+  const groupes = imp.groupes.filter(g => g.photos.length);
+  const trop = groupes.findIndex(g => g.photos.length > MAX_PHOTOS_SESSION);
+  if (trop >= 0) return toast(`Groupe ${trop + 1} : plus de ${MAX_PHOTOS_SESSION} photos. Sépare-le.`, true);
+
+  const r = lireReglages();
+  occupe('Création des sessions…');
+  try {
+    for (const g of groupes) {
+      let id;
+      do { id = genSessionId(r.initiales); } while (await DB.getSession(id));    // aucune collision
+      const maintenant = new Date().toISOString();
+      const photos = g.photos.map((p, k) => ({
+        id: `${id}_inconnu_${k + 1}`, sessionId: id, type: 'inconnu', typeIA: null, n: k + 1,
+        origine: 'import', datePrise: p.datePrise, sourceDate: p.sourceDate, gps: p.gps,
+        jpeg: p.jpeg, miniature: p.miniature, largeur: p.largeur, hauteur: p.hauteur, ajouteeLe: maintenant
+      }));
+      const s = {
+        id, schema: 1,
+        operateur: { nom: r.nom, initiales: r.initiales },
+        site: g.site, zone: g.zone, tagSaisi: g.tag,
+        source: 'Importée',
+        statut: 'attente',
+        datePriseVue: datePremiere(photos),
+        creeLe: maintenant, modifieLe: null,
+        gps: photos.find(p => p.gps)?.gps || null,
+        resultatIA: null, valeurs: null, alerteMultiMoteurs: false, confianceGlobale: null,
+        analyses: [], derniereErreur: null, valideeLe: null, exporteeLe: null
+      };
+      await DB.ajouterPhotos(s, photos);
+    }
+  } catch {
+    libre();
+    return toast("Enregistrement impossible : espace de stockage plein ? Exporte puis libère de l'espace.", true);
+  }
+  libre();
+  importEnCours = null;
+  toast(`${groupes.length} session${groupes.length > 1 ? 's créées' : ' créée'}. ${navigator.onLine ? 'Analyse en cours.' : "L'analyse partira au retour du réseau."}`);
+  aller('#/sessions');
+  traiterFile();
 }
 
 /* ---------------------------------------------------------------------
