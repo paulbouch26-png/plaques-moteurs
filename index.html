@@ -215,7 +215,7 @@ textarea {
 /* ---------------------------------------------------------------------
    1. CONSTANTES
    --------------------------------------------------------------------- */
-const APP_VERSION = '0.3.0';
+const APP_VERSION = '0.4.0';
 const REGLAGES_KEY = 'pm_reglages';      // réglages (petits) → localStorage
 const PERSIST_KEY  = 'pm_persist_demande';
 const API_URL = 'https://api.anthropic.com/v1/messages';
@@ -340,6 +340,10 @@ const DB = {
   },
   async putSession(s) {
     s.modifieLe = new Date().toISOString();
+    return DB.putSessionTelle(s);
+  },
+  // Enregistre sans toucher à modifieLe (import d'un lot : on garde la date d'origine)
+  async putSessionTelle(s) {
     const db = await ouvrirDB();
     const tx = db.transaction('sessions', 'readwrite');
     tx.objectStore('sessions').put(s);
@@ -381,6 +385,16 @@ const DB = {
     const db = await ouvrirDB();
     const tx = db.transaction(['sessions', 'photos'], 'readwrite');
     tx.objectStore('photos').delete(photoId);
+    tx.objectStore('sessions').put(session);
+    await txFin(tx);
+  },
+  // Remplace une session et TOUTES ses photos en une seule transaction (import)
+  async remplacerSession(session, photos) {
+    const anciennes = await DB.photosSession(session.id);
+    const db = await ouvrirDB();
+    const tx = db.transaction(['sessions', 'photos'], 'readwrite');
+    anciennes.forEach(p => tx.objectStore('photos').delete(p.id));
+    photos.forEach(p => tx.objectStore('photos').put(p));
     tx.objectStore('sessions').put(session);
     await txFin(tx);
   },
@@ -1577,6 +1591,10 @@ async function ecranExport() {
   const aValider = toutes.filter(s => ['a_valider', 'attente', 'capture'].includes(s.statut)).length;
 
   view().innerHTML = `
+    ${resultatImport ? carteBilanImport(resultatImport) : ''}
+    <label class="btn block" for="x-import" style="margin-bottom:6px">Importer un lot</label>
+    <input class="hidden-input" type="file" id="x-import" accept=".zip,application/zip">
+    <p class="muted" style="margin:0 0 16px">Consolidation : ajoute ici les lots ZIP reçus des autres opérateurs.</p>
     <div class="seg" id="x-mode" style="margin-bottom:10px">
       <button type="button" data-v="nonexportees" class="${exportFiltres.mode === 'nonexportees' ? 'sel' : ''}">Non exportées</button>
       <button type="button" data-v="toutes" class="${exportFiltres.mode === 'toutes' ? 'sel' : ''}">Toutes validées</button>
@@ -1601,8 +1619,15 @@ async function ecranExport() {
       : '<div class="empty">Aucune session validée à exporter.</div>'}
     ${fichierPret ? `<div class="card"><strong>Fichier prêt</strong><br><span class="num">${escHtml(fichierPret.file.name)} · ${tailleLisible(fichierPret.file.size)}</span></div>` : ''}`;
 
+  document.getElementById('x-import').onchange = e => {
+    const f = e.target.files?.[0];
+    e.target.value = '';
+    fichierPret = null;
+    if (f) importerLot(f);
+  };
+
   // Tout changement de sélection invalide le fichier déjà préparé
-  const changer = fn => e => { fn(e); fichierPret = null; ecranExport(); };
+  const changer = fn => e => { fn(e); fichierPret = null; resultatImport = null; ecranExport(); };
   document.querySelectorAll('#x-mode button').forEach(b => b.onclick = changer(() => exportFiltres.mode = b.dataset.v));
   document.getElementById('x-depuis').onchange = changer(e => exportFiltres.depuis = e.target.value);
   document.getElementById('x-site').onchange = changer(e => exportFiltres.site = e.target.value);
@@ -1837,6 +1862,160 @@ function construireLot(donnees, r) {
       }))
     }))
   };
+}
+
+/* ---------------------------------------------------------------------
+   12 quater. IMPORT D'UN LOT (consolidation)
+   Fusionne un ZIP exporté par un autre appareil dans la base locale.
+   Même ID : on garde la version la plus récente (modifieLe) et on
+   signale un conflit si les deux versions diffèrent.
+   Le contenu du lot est une donnée externe : tout est vérifié.
+   --------------------------------------------------------------------- */
+const RE_ID_SESSION = /^[A-Z]{2,3}-\d{8}-\d{4}-[A-Z0-9]{4}$/;
+const RE_ID_PHOTO = /^([A-Z]{2,3}-\d{8}-\d{4}-[A-Z0-9]{4})_(plaque|nom|installation|inconnu)_(\d+)$/;
+let resultatImport = null;      // bilan affiché sur l'écran Exporter
+
+// Lit le ZIP et retourne lot.json vérifié + l'objet JSZip
+async function lireLot(file) {
+  await chargerScript('vendor/jszip.min.js');
+  let zip;
+  try { zip = await JSZip.loadAsync(file); }
+  catch { throw new Error("Ce fichier n'est pas un ZIP lisible. Choisis un fichier Lot_….zip."); }
+  const entree = zip.file('lot.json');
+  if (!entree) throw new Error('lot.json absent : ce ZIP ne vient pas de l\'app Plaques moteurs.');
+  let lot;
+  try { lot = JSON.parse(await entree.async('string')); }
+  catch { throw new Error('lot.json illisible. Demande un nouvel export à l\'opérateur.'); }
+  if (lot?.app !== 'plaques-moteurs' || !Array.isArray(lot.sessions)) {
+    throw new Error('lot.json invalide : ce ZIP ne vient pas de l\'app Plaques moteurs.');
+  }
+  if (lot.schema !== 1) {
+    throw new Error(`Lot au format ${String(lot.schema)} : mets l'app à jour sur cet appareil.`);
+  }
+  return { lot, zip };
+}
+
+// Ne garde que des champs attendus, avec le bon type (pas de confiance aveugle)
+function nettoyerSession(brute) {
+  const txt = v => (typeof v === 'string' ? v : '');
+  const s = {
+    id: brute.id, schema: 1,
+    operateur: { nom: txt(brute.operateur?.nom), initiales: txt(brute.operateur?.initiales) },
+    site: txt(brute.site), zone: txt(brute.zone), tagSaisi: txt(brute.tagSaisi),
+    source: brute.source === 'Importée' ? 'Importée' : 'Terrain',
+    statut: STATUTS[brute.statut] ? brute.statut : 'a_valider',
+    datePriseVue: txt(brute.datePriseVue) || null,
+    creeLe: txt(brute.creeLe) || null,
+    modifieLe: txt(brute.modifieLe) || null,
+    gps: brute.gps && typeof brute.gps.lat === 'number' && typeof brute.gps.lon === 'number'
+      ? { lat: brute.gps.lat, lon: brute.gps.lon, source: txt(brute.gps.source) } : null,
+    resultatIA: brute.resultatIA && typeof brute.resultatIA === 'object' ? brute.resultatIA : null,
+    valeurs: brute.valeurs && typeof brute.valeurs === 'object' ? brute.valeurs : null,
+    alerteMultiMoteurs: !!brute.alerteMultiMoteurs,
+    confianceGlobale: CONFIANCES.includes(brute.confianceGlobale) ? brute.confianceGlobale : null,
+    champsModifies: Array.isArray(brute.champsModifies) ? brute.champsModifies.filter(x => typeof x === 'string') : [],
+    analyses: Array.isArray(brute.analyses) ? brute.analyses.filter(a => a && typeof a === 'object') : [],
+    derniereErreur: null, erreurType: null,
+    valideeLe: txt(brute.valideeLe) || null,
+    exporteeLe: null
+  };
+  // Sur cet appareil, une session reçue n'a pas encore été exportée
+  if (s.statut === 'exportee') s.statut = 'validee';
+  // Une session sans valeurs ne peut pas être « validée » : retour à « À valider »
+  if (!s.valeurs && ['validee', 'a_valider'].includes(s.statut)) s.statut = 'attente';
+  return s;
+}
+
+// Lit les photos d'une session depuis le ZIP et refait les miniatures
+async function photosDuLot(zip, sessionId, metas) {
+  const photos = [];
+  let manquantes = 0;
+  for (const m of Array.isArray(metas) ? metas : []) {
+    const r = RE_ID_PHOTO.exec(m?.id || '');
+    const entree = r && r[1] === sessionId ? zip.file('photos/' + m.id + '.jpg') : null;
+    if (!entree) { manquantes++; continue; }
+    try {
+      const jpeg = new Blob([await entree.async('arraybuffer')], { type: 'image/jpeg' });
+      const img = await decoderImage(jpeg);
+      const mini = await versJpeg(img, MINI_MAX, 0.8);
+      const largeur = img.width, hauteur = img.height;
+      if (img.close) img.close();
+      photos.push({
+        id: m.id, sessionId, type: r[2], n: Number(r[3]),
+        typeIA: typeof m.typeIA === 'string' ? m.typeIA : null,
+        origine: ['camera', 'galerie', 'import'].includes(m.origine) ? m.origine : 'import',
+        datePrise: typeof m.datePrise === 'string' ? m.datePrise : null,
+        sourceDate: ['exif', 'fichier', 'ordre'].includes(m.sourceDate) ? m.sourceDate : 'ordre',
+        gps: m.gps && typeof m.gps.lat === 'number' ? { lat: m.gps.lat, lon: m.gps.lon, source: 'exif' } : null,
+        jpeg, miniature: mini.blob, largeur, hauteur,
+        ajouteeLe: new Date().toISOString()
+      });
+    } catch { manquantes++; }
+  }
+  return { photos, manquantes };
+}
+
+// Deux versions ont-elles le même contenu utile ?
+const empreinte = s => JSON.stringify([s.valeurs, s.site, s.zone, s.tagSaisi, s.alerteMultiMoteurs]);
+
+async function importerLot(file) {
+  const bilan = { fichier: file.name, ajoutees: [], majs: [], identiques: 0, conflits: [], ignorees: [], photosManquantes: 0 };
+  occupe('Lecture du lot…');
+  try {
+    const { lot, zip } = await lireLot(file);
+    for (let i = 0; i < lot.sessions.length; i++) {
+      occupe(`Import des sessions… ${i + 1}/${lot.sessions.length}`);
+      const brute = lot.sessions[i];
+      if (!RE_ID_SESSION.test(brute?.id || '')) { bilan.ignorees.push(String(brute?.id || '(sans ID)')); continue; }
+      const entrante = nettoyerSession(brute);
+      entrante.importeLe = new Date().toISOString();
+      entrante.lotOrigine = file.name;
+      const locale = await DB.getSession(entrante.id);
+
+      if (locale) {
+        const memeContenu = empreinte(locale) === empreinte(entrante);
+        const entranteRecente = (entrante.modifieLe || '') > (locale.modifieLe || '');
+        if (memeContenu) { bilan.identiques++; continue; }
+        if (!entranteRecente) {
+          // La version locale est plus récente : on la garde, mais on le signale
+          bilan.conflits.push({ id: entrante.id, gardee: 'locale' });
+          continue;
+        }
+        bilan.conflits.push({ id: entrante.id, gardee: 'importée' });
+      }
+      const { photos, manquantes } = await photosDuLot(zip, entrante.id, brute.photos);
+      bilan.photosManquantes += manquantes;
+      if (!photos.length) { bilan.ignorees.push(entrante.id + ' (aucune photo lisible)'); continue; }
+      entrante.datePriseVue = entrante.datePriseVue || datePremiere(photos);
+      await DB.remplacerSession(entrante, photos);      // garde modifieLe d'origine
+      (locale ? bilan.majs : bilan.ajoutees).push(entrante.id);
+    }
+  } catch (e) {
+    bilan.erreur = e.message || String(e);
+  } finally {
+    libre();
+  }
+  resultatImport = bilan;
+  ecranExport();
+}
+
+function carteBilanImport(b) {
+  if (b.erreur) {
+    return `<div class="banner alarm" style="margin:0 0 12px"><strong>Import impossible.</strong><br>${escHtml(b.erreur)}<br>Aucune donnée n'a été modifiée.</div>`;
+  }
+  const lignes = [
+    `${b.ajoutees.length} session${b.ajoutees.length > 1 ? 's' : ''} ajoutée${b.ajoutees.length > 1 ? 's' : ''}`,
+    `${b.majs.length} mise${b.majs.length > 1 ? 's' : ''} à jour`,
+    `${b.identiques} déjà à jour`
+  ];
+  const conflits = b.conflits.length ? `
+    <div class="banner warn" style="margin:10px 0 0"><strong>${b.conflits.length} conflit${b.conflits.length > 1 ? 's' : ''}</strong> (même ID, contenus différents) :<br>
+      ${b.conflits.map(c => `<span class="num">${escHtml(c.id)}</span> : version ${c.gardee} gardée (plus récente)`).join('<br>')}</div>` : '';
+  const ignorees = b.ignorees.length ? `
+    <div class="banner alarm" style="margin:10px 0 0"><strong>${b.ignorees.length} session${b.ignorees.length > 1 ? 's' : ''} ignorée${b.ignorees.length > 1 ? 's' : ''}</strong> :<br>
+      ${b.ignorees.map(escHtml).join('<br>')}</div>` : '';
+  const manq = b.photosManquantes ? `<div class="muted" style="margin-top:8px">${b.photosManquantes} photo${b.photosManquantes > 1 ? 's' : ''} absente${b.photosManquantes > 1 ? 's' : ''} ou illisible${b.photosManquantes > 1 ? 's' : ''} dans le lot.</div>` : '';
+  return `<div class="card"><strong>Lot importé : ${escHtml(b.fichier)}</strong><br><span class="num">${lignes.join(' · ')}</span>${conflits}${ignorees}${manq}</div>`;
 }
 
 /* ---------------------------------------------------------------------

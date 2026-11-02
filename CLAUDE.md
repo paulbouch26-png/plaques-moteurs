@@ -8,7 +8,7 @@ Principe : **une session = un moteur = une ligne Excel.**
 - [x] Phase 1 : Réglages, sessions, capture, stockage IndexedDB (sans IA)
 - [x] Phase 2 : analyse IA, écran de validation, file d'attente hors ligne (testée avec réponses simulées, pas encore avec la vraie API)
 - [x] Phase 3 : export Excel, lot ZIP, partage iOS (testé dans le navigateur, partage iOS simulé)
-- [ ] Phase 4 : import et consolidation des lots
+- [x] Phase 4 : import et consolidation des lots (testé dans le navigateur avec lots simulés de deux appareils)
 - [ ] Phase 5 : import de photos existantes (après tests terrain des phases 1 à 4)
 
 ## Fichiers
@@ -61,6 +61,16 @@ vendor/                librairies figées, jamais de CDN à l'usage
 - Excel (`construireExcel`) : feuille **Plaques** (37 colonnes, codes ILLISIBLE / ABSENT / NON TROUVÉ écrits en texte, CALCULÉ → « valeur (CALCULÉ) », ILLISIBLE en plus en rouge gras, miniatures 120 px ancrées, ligne figée, filtre auto) et feuille **Journal** (une ligne par session, jetons cumulés).
 - Dates : `dateExcel()` convertit l'heure locale en UTC « identique » car ExcelJS écrit en UTC.
 - Lot ZIP : `Plaques_<ini>_<AAAAMMJJ-HHMM>.xlsx`, `photos/<ID>_<type>_<n>.jpg`, `lot.json` (`construireLot`, `schema: 1`, sessions complètes + métadonnées des photos). JPEG stockés sans recompression (`STORE`).
+
+## Import de lots (section « 12 quater » de index.html)
+
+- Bouton « Importer un lot » en haut de l'écran Exporter ; bilan affiché dans une carte (`resultatImport`).
+- `lireLot()` vérifie : ZIP lisible, `lot.json` présent, `app === 'plaques-moteurs'`, `schema === 1` (sinon : « mets l'app à jour »).
+- `nettoyerSession()` ne recopie que les champs attendus, avec le bon type (le lot est une donnée externe). ID de session et de photo validés par expressions régulières.
+- Statut sur l'appareil qui importe : `exportee` → `validee` (pas encore exportée ici, donc incluse dans l'Excel maître). L'opérateur d'origine est conservé. Champs ajoutés : `importeLe`, `lotOrigine`.
+- Même ID : contenu identique → « déjà à jour » ; sinon la version au `modifieLe` le plus récent est gardée et un **conflit** est signalé (locale ou importée gardée).
+- `DB.remplacerSession()` remplace session + photos en une transaction et garde le `modifieLe` d'origine (`putSessionTelle`), pour que les imports suivants comparent les bonnes dates.
+- Miniatures recréées à l'import (elles ne sont pas dans le ZIP).
 
 ## Conventions
 
